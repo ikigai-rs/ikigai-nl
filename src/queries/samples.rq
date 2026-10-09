@@ -1,0 +1,6 @@
+# A few triples from one named graph (`?g` bound by `bindings=`). Ordered, so the same
+# data always yields the same sample and the grounding's identity is stable.
+SELECT ?g ?s ?p ?o
+WHERE { GRAPH ?g { ?s ?p ?o } }
+ORDER BY ?s ?p ?o
+LIMIT {limit}

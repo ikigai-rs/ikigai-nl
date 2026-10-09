@@ -1,0 +1,6 @@
+# The predicates one named graph uses, most triples first (`?g` bound by `bindings=`).
+SELECT ?g ?property (COUNT(*) AS ?count)
+WHERE { GRAPH ?g { ?s ?property ?o } }
+GROUP BY ?g ?property
+ORDER BY DESC(?count) ?property
+LIMIT {limit}
