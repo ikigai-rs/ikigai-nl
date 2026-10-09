@@ -10,14 +10,21 @@
 //!   script, and the catalog lists only what the caller may read. Its catalog is LIVE, as
 //!   the real one is. ⚠ When `ikigai-script` publishes, replace this with the real crate
 //!   as a dev-dependency: a stand-in is a second copy of a contract, and copies drift.
-//! - **`urn:nl:grounding`** under the config the test chooses.
+//!   It also takes a Sink (a draft or a publish), analyzing a SPARQL script with
+//!   `ikigai_nl::script_sparql`, which is ikigai-script's own analysis copied byte for byte,
+//!   and refusing a publisher who does not hold the derived authority, as the real one does.
+//! - **A deterministic stub LLM** at `urn:llm:ask`, `urn:llm:{provider}:ask` and
+//!   `urn:llm:select`, speaking ikigai-llm's JSON forms. It answers each ask with a canned
+//!   draft per attempt and records every prompt it was sent. No model is ever called.
+//! - **`ikigai_nl::space`** under the config the test chooses.
 //!
 //! Every kernel has a JSON Meta renderer: the grounding reads each action's arguments
 //! from it, and the engine's own routing cannot be observed without one.
 
 #![allow(dead_code)] // each test binary uses a different subset
 
-use std::sync::Arc;
+use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use futures::executor::block_on;
@@ -144,12 +151,136 @@ impl Endpoint for StandInCatalog {
     }
 }
 
-struct StandInScript;
+/// A script the stand-in was sent with a Sink.
+#[derive(Clone, Debug)]
+pub struct SavedScript {
+    pub version: String,
+    pub state: String,
+    pub language: String,
+    pub requires: Vec<String>,
+    pub source: String,
+}
+
+/// What the stand-in's Sink has kept, by name.
+pub type Saved = Arc<Mutex<BTreeMap<String, SavedScript>>>;
+
+struct StandInScript {
+    saved: Saved,
+}
+
+fn arg<'a>(inv: &'a Invocation<'_>, name: &str) -> Option<&'a str> {
+    match inv.request.args.get(name) {
+        Some(ArgRef::Inline(bytes)) => std::str::from_utf8(bytes).ok(),
+        _ => None,
+    }
+}
+
+/// The real Sink's rules, in the real order: the write grant, the language, the DERIVED
+/// authority (refused as `InvalidArgument` when the text does not analyze), no elevation
+/// (refused as `Denied`), then `if-version` (refused as `Conflict`).
+fn sink(inv: &Invocation<'_>, saved: &Saved, name: &str) -> ikigai_core::Result<Representation> {
+    let write = format!("urn:cap:script:write:{name}");
+    if !inv.capability.allows(&write) {
+        return Err(Error::Denied(format!(
+            "publishing a script needs `{write}`, which this capability does not hold"
+        )));
+    }
+    let source = arg(inv, "content").ok_or_else(|| Error::MissingArgument("content".into()))?;
+    let language = arg(inv, "language").unwrap_or("lisp");
+    let requires: Vec<String> = match language {
+        "sparql" => ikigai_nl::script_sparql::analyze(
+            source,
+            &ikigai_nl::script_sparql::SparqlDoor::store(),
+        )?
+        .requires()
+        .into_iter()
+        .collect(),
+        _ => vec!["urn:cap:lisp".to_string()],
+    };
+    let missing: Vec<&String> = requires
+        .iter()
+        .filter(|scope| !held(inv.capability, scope))
+        .collect();
+    if !missing.is_empty() {
+        return Err(Error::Denied(format!(
+            "a script cannot be given more than its publisher holds, and this capability does \
+             not hold {missing:?}"
+        )));
+    }
+    let state = arg(inv, "state").unwrap_or("published").to_string();
+    let mut saved = saved.lock().unwrap();
+    let at = saved
+        .get(name)
+        .map(|s| s.version.clone())
+        .or_else(|| SCRIPTS.iter().find(|s| s.name == name).map(version))
+        .unwrap_or_else(|| "none".to_string());
+    if let Some(expected) = arg(inv, "if-version") {
+        if expected != at {
+            return Err(Error::Conflict(format!(
+                "urn:script:{name} is at {at}, not {expected}"
+            )));
+        }
+    }
+    let v = ikigai_nl::model::sha256(source.as_bytes());
+    saved.insert(
+        name.to_string(),
+        SavedScript {
+            version: v.clone(),
+            state,
+            language: language.to_string(),
+            requires,
+            source: source.to_string(),
+        },
+    );
+    Ok(Representation::new(
+        ReprType::new("text/plain"),
+        format!("urn:script:{name}:version:{v}\n").into_bytes(),
+    ))
+}
+
+/// "Holds", reading a trailing `*` as "some grant under this prefix", as the script host
+/// does for a derived family.
+fn held(cap: &Capability, scope: &str) -> bool {
+    match scope.strip_suffix('*') {
+        Some(prefix) => {
+            cap.is_root()
+                || cap
+                    .scopes()
+                    .is_some_and(|held| held.iter().any(|s| s.starts_with(prefix)))
+        }
+        None => cap.allows(scope),
+    }
+}
 
 #[async_trait]
 impl Endpoint for StandInScript {
     async fn invoke(&self, inv: &Invocation<'_>) -> ikigai_core::Result<Representation> {
         let name = inv.bindings.get("name").unwrap_or_default();
+        if inv.request.verb == Verb::Sink {
+            return sink(inv, &self.saved, name);
+        }
+        let kept = self.saved.lock().unwrap().get(name).cloned();
+        if let Some(kept) = kept {
+            if !inv
+                .capability
+                .allows(&format!("urn:cap:script:read:{name}"))
+            {
+                return Err(Error::Denied(format!(
+                    "this capability holds none of urn:cap:script:read:{name}"
+                )));
+            }
+            return Ok(json(serde_json::json!({
+                "iri": format!("urn:script:{name}"),
+                "schema": 1,
+                "name": name,
+                "version": kept.version,
+                "state": kept.state,
+                "public": false,
+                "language": kept.language,
+                "requires": kept.requires,
+                "source": kept.source,
+            })));
+        }
         let script = SCRIPTS.iter().find(|s| s.name == name);
         match script {
             Some(s) if may_read(inv.capability, s) => {
@@ -173,10 +304,11 @@ impl Endpoint for StandInScript {
                 }))
                 .cacheable())
             }
-            _ => Err(Error::Denied(format!(
+            Some(_) => Err(Error::Denied(format!(
                 "this capability holds none of urn:cap:script:read:{name} — nor, for a \
                  public script, urn:cap:script:read:public"
             ))),
+            None => Err(Error::NotFound(format!("urn:script:{name}"))),
         }
     }
 
@@ -185,44 +317,258 @@ impl Endpoint for StandInScript {
     }
 
     fn describe(&self) -> Description {
-        Description::new("script").verb(Verb::Meta).action(
-            ActionSpec::new(Verb::Source)
-                .summary("The script, without running it.")
-                .input(
-                    ArgSpec::new("name")
-                        .class("http://www.w3.org/2001/XMLSchema#string")
-                        .binding(),
-                )
-                .input(
-                    ArgSpec::new("as")
-                        .class("http://www.w3.org/2001/XMLSchema#string")
-                        .one_of(["application/json"])
-                        .optional(),
-                )
-                .output("application/json")
-                .requires("urn:cap:script:read:*"),
-        )
+        Description::new("script")
+            .verb(Verb::Meta)
+            .action(
+                ActionSpec::new(Verb::Source)
+                    .summary("The script, without running it.")
+                    .input(
+                        ArgSpec::new("name")
+                            .class("http://www.w3.org/2001/XMLSchema#string")
+                            .binding(),
+                    )
+                    .input(
+                        ArgSpec::new("as")
+                            .class("http://www.w3.org/2001/XMLSchema#string")
+                            .one_of(["application/json"])
+                            .optional(),
+                    )
+                    .output("application/json")
+                    .requires("urn:cap:script:read:*"),
+            )
+            .action(
+                ActionSpec::new(Verb::Sink)
+                    .summary("Publish or replace the script, or save a draft.")
+                    .input(
+                        ArgSpec::new("name")
+                            .class("http://www.w3.org/2001/XMLSchema#string")
+                            .binding(),
+                    )
+                    .input(ArgSpec::new("content").class("http://www.w3.org/2001/XMLSchema#string"))
+                    .input(
+                        ArgSpec::new("language")
+                            .class("http://www.w3.org/2001/XMLSchema#string")
+                            .one_of(["lisp", "sparql"])
+                            .optional(),
+                    )
+                    .input(
+                        ArgSpec::new("state")
+                            .class("http://www.w3.org/2001/XMLSchema#string")
+                            .one_of(["published", "draft"])
+                            .optional(),
+                    )
+                    .input(
+                        ArgSpec::new("if-version")
+                            .class("http://www.w3.org/2001/XMLSchema#string")
+                            .optional(),
+                    )
+                    .output("text/plain")
+                    .requires("urn:cap:script:write:*"),
+            )
     }
 }
 
-/// The stand-in for `ikigai-script`'s two read doors.
-pub fn scripts() -> EndpointSpace {
+/// The stand-in for `ikigai-script`'s read doors and its script Sink.
+pub fn scripts(saved: Saved) -> EndpointSpace {
     EndpointSpace::new()
         .bind(Exact::new("urn:script:catalog"), StandInCatalog)
         .bind(
             UriTemplate::parse("urn:script:{name}").unwrap(),
-            StandInScript,
+            StandInScript { saved },
         )
 }
 
-/// A kernel over `nl` beside the store (seeded), the vocabulary and the script stand-in.
+// ------------------------------------------------------------------------- the stub model
+
+/// One prompt the stub was sent.
+#[derive(Clone, Debug)]
+pub struct Call {
+    /// The door it arrived at (`urn:llm:ask`, `urn:llm:big:ask`).
+    pub backend: String,
+    pub prompt: String,
+}
+
+/// The stub's script and its record.
+#[derive(Default)]
+pub struct Stub {
+    /// For an ask (matched as a substring of the prompt), the draft each attempt answers:
+    /// the nth call for that ask gets the nth draft (the last one repeats).
+    pub drafts: Vec<(String, Vec<String>)>,
+    pub calls: Vec<Call>,
+}
+
+/// What the stub drafts for an ask it has no script for: a good query over LEDGER.
+pub const DEFAULT_DRAFT: &str = "SELECT ?item ?title WHERE { GRAPH <urn:example:ledger> { \
+    ?item <http://purl.org/dc/terms/title> ?title } } ORDER BY ?item";
+
+struct StubAsk {
+    stub: Arc<Mutex<Stub>>,
+}
+
+#[async_trait]
+impl Endpoint for StubAsk {
+    async fn invoke(&self, inv: &Invocation<'_>) -> ikigai_core::Result<Representation> {
+        let prompt = arg(inv, "prompt")
+            .ok_or_else(|| Error::MissingArgument("prompt".into()))?
+            .to_string();
+        let backend = inv.request.target.as_str().to_string();
+        let model = match inv.bindings.get("provider") {
+            Some(p) => format!("stub-{p}"),
+            None => "stub-local".to_string(),
+        };
+        let mut stub = self.stub.lock().unwrap();
+        let draft = match stub
+            .drafts
+            .iter()
+            .find(|(ask, _)| prompt.contains(ask.as_str()))
+        {
+            Some((ask, drafts)) => {
+                let seen = stub
+                    .calls
+                    .iter()
+                    .filter(|c| c.prompt.contains(ask.as_str()))
+                    .count();
+                drafts[seen.min(drafts.len() - 1)].clone()
+            }
+            None => DEFAULT_DRAFT.to_string(),
+        };
+        stub.calls.push(Call { backend, prompt });
+        // ikigai-llm's `as=application/json` envelope, the draft fenced as a model would.
+        Ok(json(serde_json::json!({
+            "text": format!("Here is the query.\n```sparql\n{draft}\n```\n"),
+            "model": model,
+            "finish_reason": "stop",
+            "usage": null,
+        })))
+    }
+
+    fn name(&self) -> &str {
+        "llm-stub-ask"
+    }
+
+    fn describe(&self) -> Description {
+        Description::new("llm-stub-ask").verb(Verb::Meta).action(
+            ActionSpec::new(Verb::Source)
+                .summary("A canned draft.")
+                .input(
+                    ArgSpec::new("provider")
+                        .class("http://www.w3.org/2001/XMLSchema#string")
+                        .binding(),
+                )
+                .input(ArgSpec::new("prompt").class("http://www.w3.org/2001/XMLSchema#string"))
+                .input(
+                    ArgSpec::new("temperature")
+                        .class("http://www.w3.org/2001/XMLSchema#decimal")
+                        .optional(),
+                )
+                .input(
+                    ArgSpec::new("as")
+                        .class("http://www.w3.org/2001/XMLSchema#string")
+                        .optional(),
+                )
+                .output("application/json"),
+        )
+    }
+}
+
+struct StubSelect;
+
+#[async_trait]
+impl Endpoint for StubSelect {
+    async fn invoke(&self, inv: &Invocation<'_>) -> ikigai_core::Result<Representation> {
+        let needs = arg(inv, "needs").unwrap_or_default();
+        let provider = if needs.contains("premium") {
+            "big"
+        } else {
+            "small"
+        };
+        Ok(json(serde_json::json!({
+            "backend": format!("urn:llm:{provider}:ask"),
+            "provider": provider,
+            "model": format!("stub-{provider}"),
+        })))
+    }
+
+    fn name(&self) -> &str {
+        "llm-stub-select"
+    }
+
+    fn describe(&self) -> Description {
+        Description::new("llm-stub-select").verb(Verb::Meta).action(
+            ActionSpec::new(Verb::Source)
+                .summary("A canned selection.")
+                .input(ArgSpec::new("needs").class("http://www.w3.org/2001/XMLSchema#string"))
+                .input(
+                    ArgSpec::new("as")
+                        .class("http://www.w3.org/2001/XMLSchema#string")
+                        .optional(),
+                )
+                .output("application/json"),
+        )
+    }
+}
+
+fn llm(stub: Arc<Mutex<Stub>>) -> EndpointSpace {
+    EndpointSpace::new()
+        .bind(Exact::new("urn:llm:ask"), StubAsk { stub: stub.clone() })
+        .bind(Exact::new("urn:llm:select"), StubSelect)
+        .bind(
+            UriTemplate::parse("urn:llm:{provider}:ask").unwrap(),
+            StubAsk { stub },
+        )
+}
+
+/// A test host and what its doubles recorded.
+pub struct Host {
+    pub kernel: Kernel,
+    pub stub: Arc<Mutex<Stub>>,
+    pub saved: Saved,
+}
+
+impl Host {
+    /// Every prompt the stub was sent, in order.
+    pub fn prompts(&self) -> Vec<Call> {
+        self.stub.lock().unwrap().calls.clone()
+    }
+
+    /// What the script stand-in kept under `name`.
+    pub fn saved(&self, name: &str) -> Option<SavedScript> {
+        self.saved.lock().unwrap().get(name).cloned()
+    }
+}
+
+/// A host whose stub model answers each ask in `drafts` with its drafts, in order.
+pub fn drafting_host(config: SpaceConfig, drafts: &[(&str, &[&str])]) -> Host {
+    let stub = Arc::new(Mutex::new(Stub {
+        drafts: drafts
+            .iter()
+            .map(|(ask, d)| (ask.to_string(), d.iter().map(|s| s.to_string()).collect()))
+            .collect(),
+        calls: Vec::new(),
+    }));
+    let saved: Saved = Arc::new(Mutex::new(BTreeMap::new()));
+    let kernel = kernel(config, stub.clone(), saved.clone());
+    Host {
+        kernel,
+        stub,
+        saved,
+    }
+}
+
+/// A kernel over `nl` beside the store (seeded), the vocabulary, the script stand-in and
+/// the stub model.
 pub fn host(config: SpaceConfig) -> Kernel {
+    drafting_host(config, &[]).kernel
+}
+
+fn kernel(config: SpaceConfig, stub: Arc<Mutex<Stub>>, saved: Saved) -> Kernel {
     let store = DurableStore::in_memory().expect("an in-memory store");
     let root = Fallback::new(vec![
         Arc::new(ikigai_nl::space(config)) as Arc<dyn Space>,
         Arc::new(store_space(store)) as Arc<dyn Space>,
         Arc::new(ikigai_vocab::space()) as Arc<dyn Space>,
-        Arc::new(scripts()) as Arc<dyn Space>,
+        Arc::new(scripts(saved)) as Arc<dyn Space>,
+        Arc::new(llm(stub)) as Arc<dyn Space>,
     ]);
     let kernel = Kernel::with_meta_renderer(Arc::new(root), Arc::new(ikigai_vocab::TurtleRenderer));
     issue(

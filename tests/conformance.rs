@@ -12,14 +12,26 @@
 //!   well-known list does not carry) and this crate's own `nl:`. The registration waives
 //!   every term under each, so `tests/turtle.rs` pins the `nl:` terms EXACTLY against
 //!   `ikigai_nl::VOCABULARY`, red in both directions.
+//! - **`nl-prompt` is `pure`**: a constant template per name, cacheable with no thread but
+//!   its own, because nothing can change it short of a new build.
+//! - **`nl-sparql` gets a fixture** (an ask, piped as `content`): its contract cannot say
+//!   "an ask, by name OR piped", so neither input is required and the walk's minimal inputs
+//!   carry no ask. With it the walk drafts through the stub model.
+//! - **`nl-sparql`'s AUTHORITY is waived, with the reason**: it declares no `requires`
+//!   because its only write is a sub-request, the Sink on `urn:script:{name}` under the
+//!   caller's own capability, which enforces `urn:cap:script:write:{name}` itself. Under no
+//!   grants the walk's call RESOLVES (an unsaved draft is a legitimate answer) and the
+//!   suite reads that as a mutation; `tests/sparql.rs` pins that nothing was written
+//!   (`an_anonymous_caller_…`, `h.saved` empty).
 //! - **Everything else in the kernel is opted out**: the store, the vocabulary and the
 //!   script stand-in are here only because the grounding composes them, and the first two
-//!   are conformed by their own crates' suites.
+//!   are conformed by their own crates' suites; the stub model is a test double.
 
 mod common;
 
 use common::*;
-use ikigai_conformance::Suite;
+use ikigai_conformance::{Check, Fixture, Suite};
+use ikigai_core::Verb;
 use ikigai_nl::{Examples, SpaceConfig};
 
 const COMPOSED: [&str; 3] = ["ikigai-vocab", "script", "script-catalog"];
@@ -27,8 +39,20 @@ const COMPOSED: [&str; 3] = ["ikigai-vocab", "script", "script-catalog"];
 fn suite() -> Suite {
     let mut suite = Suite::new()
         .cacheable("nl-grounding")
+        .pure("nl-prompt")
+        .fixture(Fixture::new("nl-sparql", Verb::Sink).arg("content", "the titles of the items"))
+        .opt_out_check(
+            "nl-sparql",
+            Check::Authority,
+            "its one write is the Sink on urn:script:{name} under the caller's own \
+             capability, which enforces urn:cap:script:write:{name}; under no grants it \
+             answers an unsaved draft and writes nothing (tests/sparql.rs pins it)",
+        )
         .namespace(ikigai_nl::VOID)
         .namespace(ikigai_nl::NS);
+    for id in ["llm-stub-ask", "llm-stub-select"] {
+        suite = suite.opt_out(id, None, "a test double for the host's LLM doors");
+    }
     for id in COMPOSED {
         suite = suite.opt_out(
             id,
@@ -80,10 +104,12 @@ fn conforms() {
 #[test]
 fn the_walk_reaches_the_grounding_and_probes_its_turtle() {
     let report = suite().run_blocking(&kernel());
-    assert!(
-        report.walked.iter().any(|id| id == "nl-grounding"),
-        "{report}"
-    );
+    for id in ["nl-grounding", "nl-sparql", "nl-sparql-check", "nl-prompt"] {
+        assert!(
+            report.walked.iter().any(|w| w == id),
+            "{id} not walked:\n{report}"
+        );
+    }
     let text = report.to_string();
     let probed = text
         .lines()
