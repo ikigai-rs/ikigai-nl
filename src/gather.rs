@@ -63,7 +63,7 @@ const RDF_PROPERTY: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#Property"
 const RDFS: &str = "http://www.w3.org/2000/01/rdf-schema#";
 const OWL: &str = "http://www.w3.org/2002/07/owl#";
 
-fn request(verb: Verb, target: &str, args: &[(&str, &str)]) -> Result<Request> {
+pub(crate) fn request(verb: Verb, target: &str, args: &[(&str, &str)]) -> Result<Request> {
     let iri = Iri::parse(target).map_err(|e| Error::Endpoint(format!("`{target}`: {e}")))?;
     let mut request = Request::new(verb, iri);
     for (name, value) in args {
@@ -468,7 +468,7 @@ async fn fill(
 /// A SPARQL JSON result set, as rows of variable → term.
 struct Rows(Vec<Row>);
 
-struct Row(BTreeMap<String, ResultTerm>);
+pub(crate) struct Row(pub(crate) BTreeMap<String, ResultTerm>);
 
 #[derive(Deserialize)]
 struct ResultSet {
@@ -482,7 +482,7 @@ struct ResultBindings {
 
 /// One term in the SPARQL 1.1 JSON results format.
 #[derive(Deserialize)]
-struct ResultTerm {
+pub(crate) struct ResultTerm {
     #[serde(rename = "type")]
     kind: String,
     value: String,
@@ -518,7 +518,7 @@ impl Row {
     }
 
     /// The term as N-Triples, serialized by `oxrdf` (the grammar's owner), never by hand.
-    fn ntriples(&self, var: &str) -> Option<String> {
+    pub(crate) fn ntriples(&self, var: &str) -> Option<String> {
         let term = self.0.get(var)?;
         Some(match term.kind.as_str() {
             "uri" => oxrdf::NamedNode::new(&term.value).ok()?.to_string(),

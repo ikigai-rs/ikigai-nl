@@ -8,12 +8,15 @@ caller's own capability, so a model can never be told about a graph, a script or
 action its user could not reach directly.
 
 ```text
-urn:nl:grounding    Source    focus=  as=text/turtle|application/json
+urn:nl:grounding        Source   focus=  as=text/turtle|application/json
+urn:nl:sparql           Sink     ask= (or piped)  graph=  examples=  save=  as=text/plain|application/json|text/turtle
+urn:nl:sparql:check     Source   content= (or piped)  focus=  preview=  as=text/plain|application/json
+urn:nl:prompt:{name}    Source   sparql | sparql-repair
 ```
 
-The drafters that consume it, `urn:nl:sparql` and `urn:nl:script`, come next in this
-repo. They ground, draft in the most analyzable language that can do the job (a query,
-then a plan, then Lisp), validate mechanically, and save a draft for a human to publish.
+`urn:nl:sparql` is the first drafter: it grounds, drafts a query, validates it
+mechanically, repairs it within a bound, and saves a DRAFT script for a person to
+publish. `urn:nl:script` (a plan, then Lisp) comes next.
 
 ## What a grounding holds
 
@@ -141,24 +144,151 @@ them is a `LIMIT` the crate computes itself. They read through
 `urn:iki:store:select` for a broad reader, and hang from the store's write threads. When
 `ikigai-script` gains SPARQL as a script language they become published scripts.
 
+## `urn:nl:sparql`: an ask to a draft query
+
+```text
+sink urn:nl:sparql ask="titles of the ledger's items" save=titles
+urn:script:titles:version:sha256:… (a DRAFT of urn:script:titles: review it, then publish it with state=published)
+
+SELECT ?item ?title WHERE { GRAPH <urn:example:ledger> { ?item <http://purl.org/dc/terms/title> ?title } } ORDER BY ?item
+
+preview (LIMIT 5):
+?item	?title
+<urn:example:item:1>	"first"
+<urn:example:item:2>	"second"
+```
+
+The model is a **drafter, never an actor**. Every step is a resource call under the
+CALLER's capability, never more:
+
+1. **Ground**: `urn:nl:grounding`, focused by `graph=`. The prompt states each graph's
+   classes, predicates and samples, and the vocabulary terms those graphs use (all the
+   focused terms, when `graph=` is given). The actions are left out: a query is not an
+   action call, and the store's query doors are the host's choice, not the model's.
+2. **Draft**: `urn:nl:prompt:sparql`, filled with the ask, the grounding and up to
+   `examples=` published SPARQL scripts, sent to the host's LLM door (`SpaceConfig::llm`):
+   the default backend at `urn:llm:ask`, or `urn:llm:select` under the host's `needs` or
+   its escalation policy (`Escalation { after, needs }`: local first, a frontier model only
+   after that many failed attempts). The model is asked for the query and, where the ask
+   implies them, its parameters in ikigai-script's `# @param` form.
+3. **Validate**: `urn:nl:sparql:check`, a resource of its own (so a person editing a draft
+   can ask the same question):
+   - bounded before the parser sees a byte and parsed, by the script host's own analysis
+     (form, declared parameters, the dataset rules); an UPDATE is refused, a draft reads;
+   - the capability the script host would DERIVE from the graphs the text names, against
+     the caller's. ★ A graph the caller cannot read is refused in the same words as a
+     graph that does not exist, so neither the caller nor the model learns which it was;
+   - every predicate and class (`rdf:type` object) the query names, against the graphs it
+     reads and the vocabulary: unknown is an error, or a warning when a graph's partitions
+     were bounded, because then the grounding cannot know;
+   - a dry run: the parameters' defaults bound into the algebra (never spliced), under
+     `LIMIT preview_rows`, through the store's graph-scoped door.
+
+   Every finding is a value in the answer, never a refusal, so the check caches.
+4. **Repair**: a refused draft goes back with `urn:nl:prompt:sparql-repair`: the previous
+   draft and exactly what was refused, nothing else. **The bound is 3 attempts** by
+   default (`max_attempts`, at most `MAX_ATTEMPTS` = 8), and drafting also stops the first
+   time the model answers a draft it already gave, because a model repeating itself is not
+   converging. 3 is a cost bound, not a measured optimum: each attempt is one model call,
+   and no corpus of real drafts exists yet to measure where repair stops paying (the stub
+   model in the tests cannot say). Measure it once real drafts accumulate.
+5. **Always a draft**: the valid draft is saved with a Sink on `urn:script:{name}`
+   (`language=sparql`, `state=draft`, `if-version` so a concurrent writer is noticed),
+   under the caller, named by `save=` or `nl-sparql-` and a digest of the drafting. The
+   script host analyzes it again and refuses a draft whose derived authority the caller
+   does not hold: that is the last validation, and an `InvalidArgument` there is fed back
+   like any other. A published script is never replaced (refused before any model is
+   asked). A caller who may not write the script gets the valid draft answered,
+   **unsaved**. A draft that never validates is answered as **failed**, with every attempt
+   and its errors, and no query.
+
+### Provenance
+
+A saved draft's text opens with its provenance, as N-Triples comment lines, above the
+model's `# @param` block (so the parameters still declare). It is part of the content, so
+it is in the version's digest, and `ikigai_nl::prov_of(text)` reads it back. The same
+graph is the answer's `as=text/turtle` face, and the JSON face carries it as `prov`:
+
+```text
+<urn:nl:sparql:drafting:{hex}> a prov:Activity ;
+    nl:ask "…" ;
+    prov:used <urn:nl:grounding:sha256:…>, <urn:nl:prompt:sparql>, <urn:nl:prompt:sparql-repair> ;
+    prov:wasAssociatedWith <urn:llm:ask> .
+<urn:nl:grounding:sha256:…> a nl:Grounding ; dcterms:identifier "sha256:…" ;
+    dcterms:hasPart <…:actions>, <…:vocabulary>, <…:graphs>, <…:examples> .   # each with its identity and source
+<urn:nl:prompt:sparql> dcterms:identifier "sha256:…" .
+<urn:nl:sparql:drafting:{hex}:attempt:1> a prov:Entity ;
+    prov:wasGeneratedBy <urn:nl:sparql:drafting:{hex}> ;
+    prov:wasAttributedTo <urn:llm:ask> ; nl:model "…" ;
+    prov:value "the query" ; dcterms:identifier "sha256:…" ;
+    nl:valid false ; nl:error "…" ; nl:warning "…" .
+<urn:nl:sparql:drafting:{hex}:attempt:2> … prov:wasRevisionOf <…:attempt:1> .
+<urn:script:{name}> prov:wasGeneratedBy <urn:nl:sparql:drafting:{hex}> ;
+    prov:wasDerivedFrom <…:attempt:2> .
+```
+
+Literals are serialized by `oxrdf`, which escapes a newline, so an ask can never end its
+comment line and become query text (a test drafts from an ask that tries).
+
+### The prompts are resources
+
+`urn:nl:prompt:sparql` and `urn:nl:prompt:sparql-repair` are text templates with
+`{{placeholders}}`, sourced through the kernel, filled in one pass (a value is never
+scanned for placeholders), and cited by sha256 in the provenance. A host that wants its
+own binds the same names in front of this crate's space.
+
+### What the host configures
+
+```rust,no_run
+use ikigai_nl::{Escalation, Llm, SpaceConfig};
+
+let config = SpaceConfig::new()
+    .llm(Llm::default().escalate(Escalation { after: 2, needs: "cost<=premium".into() }))
+    .max_attempts(3)   // drafts per ask, clamped to 1..=8
+    .preview_rows(5)
+    .prompt_examples(3)
+    .store_prefix("urn:iki:store:");
+```
+
+The model call runs under the caller's capability, so a caller who cannot reach the host's
+LLM door cannot draft: a host that wants anonymous drafting grants its anonymous principal
+that door (and, to save, the script names it may write).
+
 ## Vocabulary
 
 Actions are said with `ik:`, the vocabulary with `rdfs:`, each graph's shape with
 [VoID](http://rdfs.org/ns/void#), examples with `schema:`, identity and origin with
-`dcterms:` and `prov:`. The few terms nothing else has (`nl:Grounding`, `nl:Part`,
-`nl:focus`, `nl:shown`, `nl:of`, `nl:sample`, `nl:samplesShown`, `nl:classesShown`,
-`nl:propertiesShown`) are defined in `src/nl.ttl`, exported as `ikigai_nl::VOCABULARY`,
-under `https://ikigai-rs.dev/ns/nl#`. A test holds the renderer to exactly that list.
+`dcterms:` and `prov:`, a draft's provenance with PROV-O. The few terms nothing else has
+(`nl:Grounding`, `nl:Part`, `nl:focus`, `nl:shown`, `nl:of`, `nl:sample`,
+`nl:samplesShown`, `nl:classesShown`, `nl:propertiesShown`, and for provenance `nl:ask`,
+`nl:model`, `nl:valid`, `nl:error`, `nl:warning`) are defined in `src/nl.ttl`, exported as
+`ikigai_nl::VOCABULARY`, under `https://ikigai-rs.dev/ns/nl#`. A test holds the renderers
+to exactly that list.
+
+## Copies, until ikigai-script publishes
+
+`src/script_sparql.rs` and `src/limits.rs` are byte-for-byte copies of ikigai-script's
+`sparql.rs` and `limits.rs` (the latter itself ikigai-store's), changed only where they
+name their crate. The check must analyze a draft exactly as the script host will when it
+is saved, and ikigai-script is not published. When it is, both go and this crate depends
+on it. The test host's stand-in for the script host analyzes with the same copy, so it is
+faithful to the real Sink's rules, not to a second reading of them.
 
 ## Not in this version
 
-- **The drafters**, `urn:nl:sparql` and `urn:nl:script`: the next arcs.
+- **`urn:nl:script`**, the plan-then-Lisp drafter: the next arc. It can reuse the
+  grounding, the prompt resources (with its own templates), the repair loop's shape, the
+  provenance builder and the save-as-draft step; it needs the actions part, which a graph
+  focus drops today (a `parts=` selector on the grounding would fix that).
+- **A measured repair bound.** See above: 3 is a cost bound.
+- **IRIs beyond predicates and classes.** The check does not judge instance IRIs, IRIs in
+  expressions, `FILTER EXISTS` patterns or a CONSTRUCT template.
 - **Example parameters in Turtle.** A script document's `parameters` are passed through
   in the JSON face as the script host states them; the Turtle face does not state them
   yet.
 - **A resolvable grounding IRI.** `urn:nl:grounding:sha256:…` names a grounding by its
-  content; nothing stores one to resolve it by. A drafter that records the grounding it
-  used will make it resolvable.
+  content; nothing stores one to resolve it by. A draft records the grounding's identity
+  and each part's, not the grounding itself.
 - **Per-graph invalidation.** The store hangs every read from its three write threads,
   not from the graph it read, so a write to any graph re-queries every graph's shape.
 

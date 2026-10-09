@@ -39,6 +39,15 @@ sha2 = "0.10"
 # the lines oxigraph 0.5 uses, so a host linking ikigai-store carries one copy.
 oxrdf = "0.3"
 oxttl = "0.2"
+# A draft is PARSED here, never evaluated: `src/script_sparql.rs` (a copy of ikigai-script's
+# analysis) reads its form, parameters, dataset and derived authority from spargebra's
+# algebra, and the dry run's LIMIT and the parameter defaults are written into that algebra,
+# never spliced. 0.4.7 is the parser oxigraph 0.5.11 and ikigai-script use, so the text
+# checked here and the text the store reads go through one grammar. ⚠ `"0.4.7"` is `<0.5.0`.
+spargebra = "0.4.7"
+# A parameter's value is checked against its XSD datatype in that copy. The line oxrdf 0.3
+# already brings. ⚠ `"0.2.3"` is `<0.3.0`.
+oxsdatatypes = "0.2.3"
 
 # oxrdf pulls getrandom 0.3 (through rand, for blank-node ids this crate never mints), and
 # getrandom refuses to compile for wasm32-unknown-unknown until a backend is named. The

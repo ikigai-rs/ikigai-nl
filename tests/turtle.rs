@@ -7,7 +7,7 @@ mod common;
 use std::collections::BTreeSet;
 
 use common::*;
-use ikigai_core::Capability;
+use ikigai_core::{Capability, Verb};
 use ikigai_nl::SpaceConfig;
 
 fn nl_terms(turtle: &str) -> BTreeSet<String> {
@@ -23,6 +23,29 @@ fn nl_terms(turtle: &str) -> BTreeSet<String> {
         .collect()
 }
 
+/// A draft's provenance, with every term it can state: a refused attempt (an error), then
+/// a valid one whose preview leaves a required parameter unbound (a warning), each with
+/// its model.
+fn provenance() -> String {
+    let refused = format!(
+        "SELECT ?i WHERE {{ GRAPH <{LEDGER}> {{ ?i <http://purl.org/dc/terms/name> ?n }} }}"
+    );
+    let warned = format!(
+        "# @param title xsd:string\n\
+         SELECT ?i WHERE {{ GRAPH <{LEDGER}> {{ ?i <http://purl.org/dc/terms/title> ?title }} }}"
+    );
+    let h = drafting_host(SpaceConfig::new(), &[("every term", &[&refused, &warned])]);
+    let rep = issue(
+        &h.kernel,
+        Verb::Sink,
+        "urn:nl:sparql",
+        &[("ask", "every term"), ("as", "text/turtle")],
+        &Capability::root(),
+    )
+    .unwrap();
+    text(&rep)
+}
+
 #[test]
 fn the_nl_terms_used_are_exactly_the_terms_defined() {
     let kernel = host(SpaceConfig::new());
@@ -32,6 +55,7 @@ fn the_nl_terms_used_are_exactly_the_terms_defined() {
         &Capability::root(),
         &[("focus", LEDGER)],
     )));
+    used.extend(nl_terms(&provenance()));
 
     let defined: BTreeSet<String> = oxttl::TurtleParser::new()
         .for_slice(ikigai_nl::VOCABULARY)

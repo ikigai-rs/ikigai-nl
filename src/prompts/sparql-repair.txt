@@ -1,0 +1,9 @@
+Your previous draft was:
+```sparql
+{{previous}}
+```
+The checker refused it:
+{{errors}}
+
+Draft the query again, fixing every problem above and keeping to the rules. Answer with the
+query alone, in one ```sparql fenced block.

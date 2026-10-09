@@ -4,15 +4,17 @@
 @prefix owl:  <http://www.w3.org/2002/07/owl#> .
 @prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
 
-# The few terms `urn:nl:grounding` needs that no shared vocabulary has. Everything else
-# the grounding says is said with ik: (the actions), rdfs: (the vocabulary), VoID (each
-# graph's shape), schema: (the worked examples), dcterms: and prov: (identity and origin).
+# The few terms `urn:nl:grounding` and a drafter's provenance need that no shared vocabulary
+# has. Everything else the grounding says is said with ik: (the actions), rdfs: (the
+# vocabulary), VoID (each graph's shape), schema: (the worked examples), dcterms: and prov:
+# (identity and origin); a draft's provenance is PROV-O (prov:Activity, prov:Entity,
+# prov:value, prov:wasRevisionOf, prov:wasAttributedTo) with the five terms at the end.
 # Bundled into ikigai-nl as `ikigai_nl::VOCABULARY`; a test holds the renderer to it, so
 # a term the renderer emits and this file does not define fails the build.
 
 <https://ikigai-rs.dev/ns/nl> a owl:Ontology ;
     rdfs:label "ikigai natural-language vocabulary" ;
-    rdfs:comment "Terms for the grounding a natural-language drafter is given." ;
+    rdfs:comment "Terms for the grounding a natural-language drafter is given, and for the provenance of what it drafts." ;
     owl:versionInfo "0.1.0" .
 
 nl:Grounding a rdfs:Class ;
@@ -60,3 +62,28 @@ nl:propertiesShown a rdf:Property ;
     rdfs:label "properties shown" ;
     rdfs:comment "How many void:propertyPartition nodes are given, against void:properties in all." ;
     rdfs:range xsd:integer .
+
+nl:ask a rdf:Property ;
+    rdfs:label "ask" ;
+    rdfs:comment "What a person asked a drafter for, in natural language: the input of a drafting (a prov:Activity)." ;
+    rdfs:range xsd:string .
+
+nl:model a rdf:Property ;
+    rdfs:label "model" ;
+    rdfs:comment "The model that produced one attempt, as the LLM door that answered named it. The door itself is the attempt's prov:wasAttributedTo." ;
+    rdfs:range xsd:string .
+
+nl:valid a rdf:Property ;
+    rdfs:label "valid" ;
+    rdfs:comment "Whether one attempt passed every mechanical check (and, when it was saved, the script host kept it)." ;
+    rdfs:range xsd:boolean .
+
+nl:error a rdf:Property ;
+    rdfs:label "error" ;
+    rdfs:comment "One thing a check found wrong with an attempt, as the repair loop showed it to the model." ;
+    rdfs:range xsd:string .
+
+nl:warning a rdf:Property ;
+    rdfs:label "warning" ;
+    rdfs:comment "One thing a check could not decide about an attempt (an IRI past the grounding's bound, a parameter the preview left unbound)." ;
+    rdfs:range xsd:string .
