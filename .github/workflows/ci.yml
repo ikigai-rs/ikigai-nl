@@ -1,0 +1,19 @@
+name: ci
+on:
+  push: { branches: [main] }
+  pull_request:
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}   # never cancel main
+jobs:
+  ci:
+    uses: ikigai-rs/.github/.github/workflows/rust.yml@main
+    # The library reads everything through the kernel (no std::fs, no clock, no network),
+    # so its wasm face is claimed and linted from day one.
+    with: { wasm-lib: true }
+    # Each absence is a decision:
+    #
+    # `features:` — this crate declares none.
+    #
+    # msrv — automatic: `rust-version` in Cargo.toml makes the shared workflow run clippy
+    # and test on it.
