@@ -1,0 +1,7 @@
+# The classes one named graph uses, most instances first (`?g` bound by `bindings=`).
+# `LIMIT` is the only text the caller supplies: an unsigned integer it formats itself.
+SELECT ?g ?class (COUNT(DISTINCT ?s) AS ?count)
+WHERE { GRAPH ?g { ?s a ?class } }
+GROUP BY ?g ?class
+ORDER BY DESC(?count) ?class
+LIMIT {limit}

@@ -1,0 +1,7 @@
+# VoID-like totals for one named graph. `?g` is bound by the caller through the store's
+# `bindings=` (never spliced into this text), so the query is constant: a stored query
+# with one typed parameter, ready to become a published script.
+SELECT ?g (COUNT(*) AS ?triples) (COUNT(DISTINCT ?s) AS ?subjects)
+       (COUNT(DISTINCT ?p) AS ?properties) (COUNT(DISTINCT ?o) AS ?objects)
+WHERE { GRAPH ?g { ?s ?p ?o } }
+GROUP BY ?g

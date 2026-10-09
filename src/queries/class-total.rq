@@ -1,0 +1,4 @@
+# How many distinct classes one named graph uses (`?g` bound by `bindings=`).
+SELECT ?g (COUNT(DISTINCT ?class) AS ?classes)
+WHERE { GRAPH ?g { ?s a ?class } }
+GROUP BY ?g
