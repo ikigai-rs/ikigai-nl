@@ -79,10 +79,13 @@ a drafter in Rust reads it back into the type.
 - **Cached per capability.** The kernel keys the cache on the caller's capability and
   hangs the grounding from every thread its parts hang from, so a write to a graph it
   summarized, a change of bindings, or a republished example recomputes it.
-- **Skolemized.** No blank nodes. Actions use the catalog's own IRIs
-  (`urn:ikigai:endpoint:{id}:action:{verb}`) and terms, so the grounding joins the catalog
-  graph; a graph's shape is `urn:nl:shape:{hash of the graph IRI}`, stable across
-  groundings, so two groundings diff.
+- **Skolemized.** No blank nodes. An action is the manifold's match for its door and
+  verb (`urn:ikigai:match:{verb}:{pattern}`, an `ik:ActionMatch` saying where to invoke
+  it), joined by `ik:contract` to the catalog's content-addressed contract node
+  (`urn:ikigai:contract:{id}:{verb}:b3:{hex}`). Both IRIs are core's, never minted here,
+  so the grounding joins the manifold and the catalog graph; a graph's shape is
+  `urn:nl:shape:{hash of the graph IRI}`, stable across groundings, so two groundings
+  diff.
 
 ### `focus=`
 

@@ -162,10 +162,10 @@ pub(crate) async fn actions(inv: &Invocation<'_>, manifold: &Manifold) -> Result
                 continue;
             }
             actions.push(Action {
-                action: format!(
-                    "urn:ikigai:endpoint:{}:action:{verb}",
-                    ikigai_core::escape_iri_fragment(&description.id)
-                ),
+                // Both core's, never minted here: the match is the manifold row's subject
+                // and the contract the catalog's node, digest for digest (ledger #1034).
+                match_iri: ikigai_core::match_iri(spec.verb, pattern),
+                contract: spec.contract_iri(&description.id),
                 endpoint: exact.then(|| pattern.clone()),
                 template: (!exact).then(|| pattern.clone()),
                 id: description.id.clone(),
