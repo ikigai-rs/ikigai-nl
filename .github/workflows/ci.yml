@@ -10,10 +10,14 @@ jobs:
     uses: ikigai-rs/.github/.github/workflows/rust.yml@main
     # The library reads everything through the kernel (no std::fs, no clock, no network),
     # so its wasm face is claimed and linted from day one.
-    with: { wasm-lib: true }
+    with:
+      wasm-lib: true
+      # `http-client-probe` compiles oxigraph's HTTP client into the TEST graph, as a host's build
+      # gets it when rudof unifies `oxigraph/http-client` on (ledger #1083, #1085), and
+      # tests/service_egress.rs then proves no door here makes the store fetch a SERVICE or LOAD.
+      # The default `test` job runs the same file without it, so neither build regresses.
+      features: http-client-probe
     # Each absence is a decision:
-    #
-    # `features:` — this crate declares none.
     #
     # msrv — automatic: `rust-version` in Cargo.toml makes the shared workflow run clippy
     # and test on it.
