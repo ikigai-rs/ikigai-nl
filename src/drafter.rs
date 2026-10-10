@@ -33,7 +33,6 @@ use crate::config::SpaceConfig;
 use crate::gather::request;
 use crate::model::{sha256, Grounding};
 use crate::prompt::{self, REPAIR_PROMPT_IRI, SPARQL_PROMPT_IRI};
-use crate::NS;
 
 /// `urn:nl:sparql`.
 pub const SPARQL_IRI: &str = "urn:nl:sparql";
@@ -52,6 +51,9 @@ const XSD_INTEGER: &str = "http://www.w3.org/2001/XMLSchema#integer";
 const RDF_TYPE: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#type";
 const PROV: &str = "http://www.w3.org/ns/prov#";
 const DCTERMS: &str = "http://purl.org/dc/terms/";
+/// The `ik:` namespace: the drafting terms (`ik:draftAsk`, `ik:draftValid`, …) and the
+/// grounding's own are defined in ikigai-vocab's vocabulary (ledger #974).
+const IK: &str = ikigai_vocab::NS;
 
 /// The script names the script host reserves.
 const RESERVED_NAMES: [&str; 3] = ["eval", "catalog", "public"];
@@ -326,12 +328,12 @@ fn prov(d: &Drafting<'_>) -> String {
     let g = d.grounding;
 
     push(a, RDF_TYPE, iri(&format!("{PROV}Activity")));
-    push(a, &format!("{NS}ask"), lit(d.ask));
+    push(a, &format!("{IK}draftAsk"), lit(d.ask));
     push(a, &format!("{PROV}used"), iri(&g.iri));
-    push(&g.iri, RDF_TYPE, iri(&format!("{NS}Grounding")));
+    push(&g.iri, RDF_TYPE, iri(&format!("{IK}Grounding")));
     push(&g.iri, &format!("{DCTERMS}identifier"), lit(&g.identity));
     if let Some(focus) = &g.focus {
-        push(&g.iri, &format!("{NS}focus"), lit(focus));
+        push(&g.iri, &format!("{IK}groundingFocus"), lit(focus));
     }
     let parts: [(&str, &Option<String>, &str); 4] = [
         ("actions", &g.actions.source, &g.actions.identity),
@@ -363,20 +365,20 @@ fn prov(d: &Drafting<'_>) -> String {
         );
         push(&e, &format!("{PROV}wasAttributedTo"), iri(&attempt.backend));
         if let Some(model) = &attempt.model {
-            push(&e, &format!("{NS}model"), lit(model));
+            push(&e, &format!("{IK}model"), lit(model));
         }
         push(&e, &format!("{PROV}value"), lit(&attempt.text));
         push(&e, &format!("{DCTERMS}identifier"), lit(&attempt.identity));
         push(
             &e,
-            &format!("{NS}valid"),
+            &format!("{IK}draftValid"),
             Literal::from(attempt.valid).into(),
         );
         for error in &attempt.errors {
-            push(&e, &format!("{NS}error"), lit(error));
+            push(&e, &format!("{IK}draftError"), lit(error));
         }
         for warning in &attempt.warnings {
-            push(&e, &format!("{NS}warning"), lit(warning));
+            push(&e, &format!("{IK}draftWarning"), lit(warning));
         }
         if let Some(prev) = &previous {
             push(&e, &format!("{PROV}wasRevisionOf"), iri(prev));

@@ -291,9 +291,8 @@ fn a_draft_that_never_validates_comes_back_failed_with_every_attempt() {
     assert_eq!(attempts.len(), 3);
     assert_eq!(
         ts.iter()
-            .filter(
-                |(_, p, o)| p == "https://ikigai-rs.dev/ns/nl#valid" && o.starts_with("\"false\"")
-            )
+            .filter(|(_, p, o)| p == "https://ikigai-rs.dev/ns#draftValid"
+                && o.starts_with("\"false\""))
             .count(),
         3
     );
@@ -320,7 +319,7 @@ fn the_saved_draft_carries_its_provenance() {
     let a = format!("<{}>", d.activity);
     assert!(d.activity.starts_with("urn:nl:sparql:drafting:"));
     assert_eq!(
-        objects(&ts, &a, "https://ikigai-rs.dev/ns/nl#ask"),
+        objects(&ts, &a, "https://ikigai-rs.dev/ns#draftAsk"),
         vec![oxrdf::Literal::new_simple_literal(ask).to_string()]
     );
     let used = objects(&ts, &a, "http://www.w3.org/ns/prov#used");
@@ -345,12 +344,16 @@ fn the_saved_draft_carries_its_provenance() {
         vec!["<urn:llm:ask>"]
     );
     assert_eq!(
-        objects(&ts, &first, "https://ikigai-rs.dev/ns/nl#model"),
+        objects(&ts, &first, "https://ikigai-rs.dev/ns#model"),
         vec!["\"stub-local\""]
     );
-    assert!(objects(&ts, &first, "https://ikigai-rs.dev/ns/nl#valid")[0].starts_with("\"false\""));
-    assert!(!objects(&ts, &first, "https://ikigai-rs.dev/ns/nl#error").is_empty());
-    assert!(objects(&ts, &second, "https://ikigai-rs.dev/ns/nl#valid")[0].starts_with("\"true\""));
+    assert!(
+        objects(&ts, &first, "https://ikigai-rs.dev/ns#draftValid")[0].starts_with("\"false\"")
+    );
+    assert!(!objects(&ts, &first, "https://ikigai-rs.dev/ns#draftError").is_empty());
+    assert!(
+        objects(&ts, &second, "https://ikigai-rs.dev/ns#draftValid")[0].starts_with("\"true\"")
+    );
     assert_eq!(
         objects(&ts, &second, "http://www.w3.org/ns/prov#wasRevisionOf"),
         vec![first.clone()]

@@ -8,10 +8,11 @@
 //!   so the composite must come back cached and carry its parts' threads. (With the
 //!   default, the live script catalog, it is live by construction; `tests/grounding.rs`
 //!   holds both polarities.)
-//! - **Two namespaces are registered**: VoID (a W3C interest-group vocabulary the suite's
-//!   well-known list does not carry) and this crate's own `nl:`. The registration waives
-//!   every term under each, so `tests/turtle.rs` pins the `nl:` terms EXACTLY against
-//!   `ikigai_nl::VOCABULARY`, red in both directions.
+//! - **One namespace is registered**: VoID, a W3C interest-group vocabulary the suite's
+//!   well-known list does not carry (the registration waives every term under it). Every
+//!   other term the faces state is `ik:` or well-known, so the suite's VOCABULARY check
+//!   holds each `ik:` term to `ikigai_vocab::VOCABULARY` itself; `tests/turtle.rs` adds
+//!   that the grounding's and the drafting's own `ik:` terms are all still stated.
 //! - **`nl-prompt` is `pure`**: a constant template per name, cacheable with no thread but
 //!   its own, because nothing can change it short of a new build.
 //! - **`nl-sparql` gets a fixture** (an ask, piped as `content`): its contract cannot say
@@ -48,8 +49,7 @@ fn suite() -> Suite {
              capability, which enforces urn:cap:script:write:{name}; under no grants it \
              answers an unsaved draft and writes nothing (tests/sparql.rs pins it)",
         )
-        .namespace(ikigai_nl::VOID)
-        .namespace(ikigai_nl::NS);
+        .namespace(ikigai_nl::VOID);
     for id in ["llm-stub-ask", "llm-stub-select"] {
         suite = suite.opt_out(id, None, "a test double for the host's LLM doors");
     }

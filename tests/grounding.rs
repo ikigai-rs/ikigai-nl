@@ -175,10 +175,10 @@ fn bounds_say_first_n_of_m_and_never_truncate_silently() {
     assert_eq!((shape.property_partitions.len(), shape.properties), (1, 2));
     // The Turtle face states the same counts.
     let face = turtle(&kernel, &Capability::root(), &[]);
-    assert!(face.contains("nl:samplesShown 2"), "{face}");
-    assert!(face.contains("nl:propertiesShown 1"));
+    assert!(face.contains("ik:shownSampleTriples 2"), "{face}");
+    assert!(face.contains("ik:shownPropertyPartitions 1"));
     assert!(face.contains("void:properties 2"));
-    assert!(face.contains("nl:shown 1") && face.contains("nl:of 2"));
+    assert!(face.contains("ik:shownItems 1") && face.contains("ik:offeredItems 2"));
     // A focus reaches the graph past the bound.
     let focused = grounding(&kernel, &Capability::root(), &[("focus", LEDGER)]);
     assert_eq!(focused.graphs.items[0].graph, LEDGER);

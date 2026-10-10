@@ -82,13 +82,6 @@ pub use render::VOID;
 /// `urn:nl:grounding`.
 pub const GROUNDING_IRI: &str = "urn:nl:grounding";
 
-/// The namespace of the few terms the grounding's Turtle face needs that no shared
-/// vocabulary has.
-pub const NS: &str = "https://ikigai-rs.dev/ns/nl#";
-
-/// The definitions of every [`NS`] term, as Turtle.
-pub const VOCABULARY: &str = include_str!("nl.ttl");
-
 /// The space binding `urn:nl:grounding`, `urn:nl:sparql`, `urn:nl:sparql:check` and
 /// `urn:nl:prompt:{name}` under `config`.
 pub fn space(config: SpaceConfig) -> EndpointSpace {

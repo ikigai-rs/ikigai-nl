@@ -12,9 +12,9 @@ use ikigai_core::{ActionSpec, ArgSpec, Description, InputSource, Verb};
 use oxrdf::{Literal, NamedNode, Triple};
 
 use crate::model::{sha256, Action, GraphShape, Grounding, Part};
-use crate::NS;
-
-const IK: &str = "https://ikigai-rs.dev/ns#";
+// Every term the grounding states that no other vocabulary has is an `ik:` term, defined
+// in ikigai-vocab's vocabulary (ledger #974 promoted them from this crate's old `nl:`).
+const IK: &str = ikigai_vocab::NS;
 const RDF: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#";
 const RDFS: &str = "http://www.w3.org/2000/01/rdf-schema#";
 const OWL: &str = "http://www.w3.org/2002/07/owl#";
@@ -25,9 +25,8 @@ const SCHEMA: &str = "http://schema.org/";
 /// VoID, the W3C interest-group vocabulary for describing datasets.
 pub const VOID: &str = "http://rdfs.org/ns/void#";
 
-const PREFIXES: [(&str, &str); 10] = [
+const PREFIXES: [(&str, &str); 9] = [
     ("ik", IK),
-    ("nl", NS),
     ("void", VOID),
     ("dcterms", DCTERMS),
     ("prov", PROV),
@@ -124,10 +123,10 @@ fn short(text: &str) -> String {
 pub(crate) fn turtle(grounding: &Grounding) -> Vec<u8> {
     let mut g = Graph::default();
     let root = grounding.iri.as_str();
-    g.a(root, &format!("{NS}Grounding"));
+    g.a(root, &format!("{IK}Grounding"));
     g.lit(root, &format!("{DCTERMS}identifier"), &grounding.identity);
     if let Some(focus) = &grounding.focus {
-        g.lit(root, &format!("{NS}focus"), focus);
+        g.lit(root, &format!("{IK}groundingFocus"), focus);
     }
 
     let actions = part(&mut g, root, "actions", &grounding.actions);
@@ -197,7 +196,7 @@ pub(crate) fn turtle(grounding: &Grounding) -> Vec<u8> {
 fn part<T>(g: &mut Graph, root: &str, name: &str, part: &Part<T>) -> String {
     let node = format!("{root}:{name}");
     g.iri(root, &format!("{DCTERMS}hasPart"), &node);
-    g.a(&node, &format!("{NS}Part"));
+    g.a(&node, &format!("{IK}GroundingPart"));
     g.lit(&node, &format!("{RDFS}label"), name);
     if let Some(source) = &part.source {
         g.iri(&node, &format!("{PROV}wasDerivedFrom"), source);
@@ -206,8 +205,8 @@ fn part<T>(g: &mut Graph, root: &str, name: &str, part: &Part<T>) -> String {
     if let Some(version) = &part.version {
         g.lit(&node, &format!("{OWL}versionInfo"), version);
     }
-    g.int(&node, &format!("{NS}shown"), part.shown as u64);
-    g.int(&node, &format!("{NS}of"), part.of as u64);
+    g.int(&node, &format!("{IK}shownItems"), part.shown as u64);
+    g.int(&node, &format!("{IK}offeredItems"), part.of as u64);
     if let Some(note) = &part.note {
         g.lit(&node, &format!("{RDFS}comment"), note);
     }
@@ -266,17 +265,17 @@ fn render_shape(g: &mut Graph, node: &str, shape: &GraphShape) {
     g.int(node, &format!("{VOID}classes"), shape.classes);
     g.int(
         node,
-        &format!("{NS}classesShown"),
+        &format!("{IK}shownClassPartitions"),
         shape.class_partitions.len() as u64,
     );
     g.int(
         node,
-        &format!("{NS}propertiesShown"),
+        &format!("{IK}shownPropertyPartitions"),
         shape.property_partitions.len() as u64,
     );
     g.int(
         node,
-        &format!("{NS}samplesShown"),
+        &format!("{IK}shownSampleTriples"),
         shape.samples.len() as u64,
     );
     for partition in &shape.class_partitions {
@@ -292,7 +291,7 @@ fn render_shape(g: &mut Graph, node: &str, shape: &GraphShape) {
         g.int(&p, &format!("{VOID}triples"), partition.count);
     }
     for sample in &shape.samples {
-        g.lit(node, &format!("{NS}sample"), sample);
+        g.lit(node, &format!("{IK}sampleTriple"), sample);
     }
     if let Some(error) = &shape.error {
         g.lit(node, &format!("{RDFS}comment"), error);

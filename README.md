@@ -34,21 +34,21 @@ The test host's grounding for root, focused on one graph (abridged):
 
 ```text
 source urn:nl:grounding focus=urn:example:ledger
-<urn:nl:grounding:sha256:3fcb…> a nl:Grounding ;
+<urn:nl:grounding:sha256:3fcb…> a ik:Grounding ;
     dcterms:identifier "sha256:3fcb…" ;
-    nl:focus "urn:example:ledger" ;
+    ik:groundingFocus "urn:example:ledger" ;
     dcterms:hasPart <…:actions>, <…:vocabulary>, <…:graphs>, <…:examples> .
-<…:graphs> a nl:Part ;
+<…:graphs> a ik:GroundingPart ;
     prov:wasDerivedFrom <urn:iki:store:graphs> ;
     dcterms:identifier "sha256:2c75…" ;
-    nl:shown 1 ; nl:of 2 ;
+    ik:shownItems 1 ; ik:offeredItems 2 ;
     rdfs:comment "1 of 2 graphs mention the focus `urn:example:ledger`" ;
     dcterms:hasPart <urn:nl:shape:1180ba9d89603646> .
 <urn:nl:shape:1180ba9d89603646> a void:Dataset ;
     prov:wasDerivedFrom <urn:example:ledger> ;
-    void:triples 6 ; void:classes 1 ; nl:samplesShown 5 ;
+    void:triples 6 ; void:classes 1 ; ik:shownSampleTriples 5 ;
     void:classPartition <urn:nl:shape:1180ba9d89603646:class:210e637540fea61c> ;
-    nl:sample "<urn:example:item:1> <http://purl.org/dc/terms/title> \"first\" ." .
+    ik:sampleTriple "<urn:example:item:1> <http://purl.org/dc/terms/title> \"first\" ." .
 ```
 
 The JSON face (`as=application/json`) is the same content as `ikigai_nl::Grounding`, so
@@ -72,7 +72,7 @@ a drafter in Rust reads it back into the type.
   exactly which grounding it was drafted from, and two callers with the same view cite
   the same grounding.
 - **Bounded and honest.** Every part says how many items it shows against how many were
-  offered (`nl:shown` of `nl:of`), each graph says how many classes, predicates and
+  offered (`ik:shownItems` of `ik:offeredItems`), each graph says how many classes, predicates and
   samples it lists against its totals, and a part narrowed by a bound says so in a
   sentence. A grounding over the host's size bound is **refused** with its size, its
   bound and its contents counted, never truncated: narrow it with `focus=`.
@@ -211,17 +211,17 @@ graph is the answer's `as=text/turtle` face, and the JSON face carries it as `pr
 
 ```text
 <urn:nl:sparql:drafting:{hex}> a prov:Activity ;
-    nl:ask "…" ;
+    ik:draftAsk "…" ;
     prov:used <urn:nl:grounding:sha256:…>, <urn:nl:prompt:sparql>, <urn:nl:prompt:sparql-repair> ;
     prov:wasAssociatedWith <urn:llm:ask> .
-<urn:nl:grounding:sha256:…> a nl:Grounding ; dcterms:identifier "sha256:…" ;
+<urn:nl:grounding:sha256:…> a ik:Grounding ; dcterms:identifier "sha256:…" ;
     dcterms:hasPart <…:actions>, <…:vocabulary>, <…:graphs>, <…:examples> .   # each with its identity and source
 <urn:nl:prompt:sparql> dcterms:identifier "sha256:…" .
 <urn:nl:sparql:drafting:{hex}:attempt:1> a prov:Entity ;
     prov:wasGeneratedBy <urn:nl:sparql:drafting:{hex}> ;
-    prov:wasAttributedTo <urn:llm:ask> ; nl:model "…" ;
+    prov:wasAttributedTo <urn:llm:ask> ; ik:model "…" ;
     prov:value "the query" ; dcterms:identifier "sha256:…" ;
-    nl:valid false ; nl:error "…" ; nl:warning "…" .
+    ik:draftValid false ; ik:draftError "…" ; ik:draftWarning "…" .
 <urn:nl:sparql:drafting:{hex}:attempt:2> … prov:wasRevisionOf <…:attempt:1> .
 <urn:script:{name}> prov:wasGeneratedBy <urn:nl:sparql:drafting:{hex}> ;
     prov:wasDerivedFrom <…:attempt:2> .
@@ -259,11 +259,25 @@ that door (and, to save, the script names it may write).
 Actions are said with `ik:`, the vocabulary with `rdfs:`, each graph's shape with
 [VoID](http://rdfs.org/ns/void#), examples with `schema:`, identity and origin with
 `dcterms:` and `prov:`, a draft's provenance with PROV-O. The few terms nothing else has
-(`nl:Grounding`, `nl:Part`, `nl:focus`, `nl:shown`, `nl:of`, `nl:sample`,
-`nl:samplesShown`, `nl:classesShown`, `nl:propertiesShown`, and for provenance `nl:ask`,
-`nl:model`, `nl:valid`, `nl:error`, `nl:warning`) are defined in `src/nl.ttl`, exported as
-`ikigai_nl::VOCABULARY`, under `https://ikigai-rs.dev/ns/nl#`. A test holds the renderers
-to exactly that list.
+are `ik:` terms too, defined in the shared ikigai vocabulary at
+[https://ikigai-rs.dev/ns](https://ikigai-rs.dev/ns) (from `ikigai-vocab` 0.1.88, the floor
+this crate pins):
+
+| term | says |
+| --- | --- |
+| `ik:Grounding` | the grounding itself |
+| `ik:GroundingPart` | one of its four parts |
+| `ik:groundingFocus` | the graph IRI or topic word it was narrowed to |
+| `ik:shownItems` / `ik:offeredItems` | a part's count shown, against how many were offered |
+| `ik:sampleTriple` | one sample triple of a graph, as an N-Triples line |
+| `ik:shownSampleTriples`, `ik:shownClassPartitions`, `ik:shownPropertyPartitions` | how many samples, class partitions and property partitions a graph's shape lists |
+| `ik:draftAsk` | what a drafting was asked |
+| `ik:model` | the model an attempt came from (the same term that names a backend's model) |
+| `ik:draftValid`, `ik:draftError`, `ik:draftWarning` | whether an attempt passed every check, and what the checks found |
+
+Counts are `xsd:integer`. A test holds the renderers to the vocabulary: every `ik:` term
+either face states must be defined there, and every term in the table above must still be
+stated.
 
 ## Copies, until ikigai-script publishes
 
