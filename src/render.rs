@@ -2,9 +2,10 @@
 //!
 //! Every triple goes through `oxrdf` terms and `oxttl`'s serializer, so nothing here
 //! escapes anything by hand: the only correct escaper for a grammar is the one that owns
-//! it. No blank nodes: every node is an IRI that is stable across groundings
-//! (`urn:ikigai:endpoint:…` for actions, as the catalog names them; `urn:nl:shape:…` for a
-//! graph's shape), so two groundings diff and union.
+//! it. No blank nodes: every node is an IRI that is stable across groundings (an action's
+//! match and contract as the manifold and the catalog name them, `urn:ikigai:match:…` and
+//! `urn:ikigai:contract:…`; `urn:nl:shape:…` for a graph's shape), so two groundings diff
+//! and union, and a grounding unions with the manifold and the catalog.
 
 use std::collections::HashSet;
 
@@ -131,7 +132,7 @@ pub(crate) fn turtle(grounding: &Grounding) -> Vec<u8> {
 
     let actions = part(&mut g, root, "actions", &grounding.actions);
     for action in &grounding.actions.items {
-        g.iri(&actions, &format!("{DCTERMS}hasPart"), &action.action);
+        g.iri(&actions, &format!("{DCTERMS}hasPart"), &action.match_iri);
         render_action(&mut g, action);
     }
 
@@ -213,9 +214,15 @@ fn part<T>(g: &mut Graph, root: &str, name: &str, part: &Part<T>) -> String {
     node
 }
 
-/// One action as the catalog states it (`ikigai_vocab::to_turtle` over a description
-/// holding only this verb, so the IRIs and terms are the catalog's own), plus where to
-/// invoke it.
+/// One action as the manifold and the catalog state it: its match node, as the manifold's
+/// row (`ik:ActionMatch`, where to invoke it, `ik:contract`), and its contract node as the
+/// catalog writes it (`ikigai_vocab::to_turtle` over a description holding only this verb).
+///
+/// The rebuilt description carries every field `ActionSpec::contract_id` reads (summary,
+/// each input's name, summary, required, source, class, default and `one_of`, the
+/// outputs, the scopes) and the endpoint id, so the node `to_turtle` writes is the one
+/// `action.contract` names, digest for digest: the rebuild loses nothing the hash covers.
+/// `tests/turtle.rs` pins it against the manifold's own `ik:contract`.
 fn render_action(g: &mut Graph, action: &Action) {
     let verb = match action.verb.as_str() {
         "sink" => Verb::Sink,
@@ -247,11 +254,16 @@ fn render_action(g: &mut Graph, action: &Action) {
         .verb(verb)
         .action(spec);
     g.turtle(&ikigai_vocab::to_turtle(&description));
+    // The match: a subset of the manifold's row for this door and verb, never a node of
+    // nl's own. Its verb and scopes are the contract's, so they are not repeated here.
+    let m = action.match_iri.as_str();
+    g.a(m, &format!("{IK}ActionMatch"));
     match (&action.endpoint, &action.template) {
-        (Some(endpoint), _) => g.iri(&action.action, &format!("{IK}endpoint"), endpoint),
-        (None, Some(template)) => g.lit(&action.action, &format!("{IK}template"), template),
+        (Some(endpoint), _) => g.iri(m, &format!("{IK}endpoint"), endpoint),
+        (None, Some(template)) => g.lit(m, &format!("{IK}template"), template),
         (None, None) => {}
     }
+    g.iri(m, &format!("{IK}contract"), &action.contract);
 }
 
 fn render_shape(g: &mut Graph, node: &str, shape: &GraphShape) {

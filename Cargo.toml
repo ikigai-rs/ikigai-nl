@@ -17,17 +17,20 @@ keywords = ["ikigai", "roc", "llm", "grounding", "module"]
 categories = ["development-tools"]
 
 [dependencies]
-# The published kernel. 0.1.87 is the line every sibling this crate composes is built
-# against; the APIs used here (`Invocation::fan_out`, `UriTemplate`, `Description`'s
-# serde form, `escape_iri_fragment`) are older. ⚠ `"0.1.87"` is a RANGE, `<0.2.0`: when
-# core reaches 0.2 this line must move or the crate freezes out of it.
-ikigai-core = "0.1.87"
+# The published kernel. 0.1.91 is the TRUE floor: an action's two identities,
+# `match_iri` (the manifold row's subject) and `ActionSpec::contract_iri` (the catalog's
+# content-addressed contract node), exist only from it (ledger #948, #1034); the other
+# APIs used here (`Invocation::fan_out`, `UriTemplate`, `Description`'s serde form) are
+# older. ⚠ `"0.1.91"` is a RANGE, `<0.2.0`: when core reaches 0.2 this line must move or
+# the crate freezes out of it.
+ikigai-core = "0.1.91"
 # `to_turtle` renders each action exactly as the catalog does (same IRIs, same `ik:`
 # terms), `VOCAB_IRI` is where the vocabulary is bound, and `NS` is the namespace of every
-# term the grounding and a draft's provenance state that no other vocabulary has. 0.1.88 is
-# the TRUE floor: `ik:Grounding`, `ik:GroundingPart`, `ik:shownItems`, `ik:draftValid` and
-# the rest of those terms exist only from it (ledger #974). ⚠ `"0.1.88"` is `<0.2.0`.
-ikigai-vocab = "0.1.88"
+# term the grounding and a draft's provenance state that no other vocabulary has. 0.1.91 is
+# the TRUE floor: from it `to_turtle` names the contract node by core's content-addressed
+# IRI, and `ik:contract` (match to contract) is defined; `ik:Grounding` and the rest of
+# this crate's terms arrived in 0.1.88 (ledger #974). ⚠ `"0.1.91"` is `<0.2.0`.
+ikigai-vocab = "0.1.91"
 # `Endpoint::invoke` is `async_trait`, and the grounding endpoint carries its config.
 async-trait = "0.1"
 # The JSON face, and reading the JSON faces of what it composes (descriptions, SPARQL

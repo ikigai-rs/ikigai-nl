@@ -8,8 +8,10 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 /// The version of the JSON face. Raised when a field changes meaning or disappears;
-/// a new optional field does not raise it.
-pub const SCHEMA: u32 = 1;
+/// a new optional field does not raise it. 2: an action's `action` (the old
+/// `urn:ikigai:endpoint:{id}:action:{verb}`, which every copy of an id shared) became
+/// `match` and `contract`, core 0.1.91's two identities for it (ledger #1034).
+pub const SCHEMA: u32 = 2;
 
 /// What a drafter may know, under one caller's capability.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -83,12 +85,22 @@ impl<T: Serialize> Part<T> {
     }
 }
 
-/// One action the caller may take: one verb of one bound endpoint, with its contract.
+/// One action the caller may take: one verb at one door, with its contract.
+///
+/// It has two identities, both core's and neither minted here (ledger #948): the
+/// **match**, one per door and verb, and the **contract** it satisfies, content-addressed,
+/// which two doors serving identical contracts share. An endpoint's id names neither: a
+/// mounted copy and a second door carry the same id.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Action {
-    /// `urn:ikigai:endpoint:{id}:action:{verb}`, the catalog's IRI for it.
-    pub action: String,
+    /// `urn:ikigai:match:{verb}:{pattern}`, `ikigai_core::match_iri`: the subject of this
+    /// door and verb's row in the manifold (`urn:kernel:actions`).
+    #[serde(rename = "match")]
+    pub match_iri: String,
+    /// `urn:ikigai:contract:{id}:{verb}:b3:{hex}`, `ActionSpec::contract_iri`: the
+    /// catalog's node for this verb's contract, and the manifold's `ik:contract`.
+    pub contract: String,
     /// The IRI to invoke, for an exact binding.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub endpoint: Option<String>,

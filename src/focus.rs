@@ -19,7 +19,8 @@ pub(crate) fn mentions<'a>(focus: &str, texts: impl IntoIterator<Item = &'a str>
 
 pub(crate) fn action(focus: &str, action: &Action) -> bool {
     let mut texts = vec![
-        action.action.as_str(),
+        action.match_iri.as_str(),
+        action.contract.as_str(),
         action.id.as_str(),
         action.title.as_str(),
         action.summary.as_str(),

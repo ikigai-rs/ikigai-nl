@@ -131,10 +131,151 @@ fn every_part_is_stated_in_turtle_with_its_origin_and_counts() {
         );
         assert!(block.contains("dcterms:identifier \"sha256:"), "{block}");
     }
-    // An action carries the catalog's own contract and where to invoke it.
-    assert!(face.contains("<urn:ikigai:endpoint:store-graph-select:action:source> a ik:Action"));
+    // An action is the manifold's match, saying where to invoke it, joined to the
+    // catalog's own contract (ledger #1034).
+    assert!(face.contains("<urn:ikigai:match:source:urn:iki:store:graph-select> a ik:ActionMatch"));
     assert!(face.contains("ik:endpoint <urn:iki:store:graph-select>"));
+    assert!(face.contains("<urn:ikigai:match:source:urn:script:%7Bname%7D> a ik:ActionMatch"));
     assert!(face.contains("ik:template \"urn:script:{name}\""));
+    assert!(face.contains("ik:contract <urn:ikigai:contract:store-graph-select:source:b3:"));
+    assert!(!face.contains(":action:source>"), "no old-style action IRI");
     // A worked example.
     assert!(face.contains("<urn:script:stale-urgent> a schema:SoftwareSourceCode"));
+}
+
+/// A Turtle document's triples as (subject, predicate, object) text: an IRI as itself, a
+/// literal as its value.
+fn triples(turtle: &str) -> Vec<(String, String, String)> {
+    oxttl::TurtleParser::new()
+        .for_slice(turtle)
+        .map(|t| t.unwrap_or_else(|e| panic!("parses: {e}\n{turtle}")))
+        .map(|t| {
+            let subject = match &t.subject {
+                oxrdf::NamedOrBlankNode::NamedNode(n) => n.as_str().to_string(),
+                other => other.to_string(),
+            };
+            let object = match &t.object {
+                oxrdf::Term::NamedNode(n) => n.as_str().to_string(),
+                oxrdf::Term::Literal(l) => l.value().to_string(),
+                other => other.to_string(),
+            };
+            (subject, t.predicate.as_str().to_string(), object)
+        })
+        .collect()
+}
+
+fn objects<'a>(triples: &'a [(String, String, String)], s: &str, p: &str) -> Vec<&'a str> {
+    let mut found: Vec<&str> = triples
+        .iter()
+        .filter(|(ts, tp, _)| ts == s && tp == p)
+        .map(|(_, _, o)| o.as_str())
+        .collect();
+    found.sort();
+    found
+}
+
+/// Ledger #1034 (core 0.1.91, ledger #948): an action is ONE match per door and verb,
+/// named as the manifold names it (`urn:ikigai:match:{verb}:{pattern}`) and joined by
+/// `ik:contract` to the catalog's content-addressed contract node. Where to invoke it hangs
+/// on the match, never on a node of its own: a grounding that minted the old
+/// `urn:ikigai:endpoint:{id}:action:{verb}` put `ik:endpoint` on one node while
+/// `to_turtle` wrote the contract on another. And the contract the grounding renders is the
+/// one the manifold cites, digest for digest.
+#[test]
+fn each_action_is_the_manifolds_match_joined_to_its_contract() {
+    let kernel = host(SpaceConfig::new());
+    let rdf_type = "http://www.w3.org/1999/02/22-rdf-syntax-ns#type";
+    let has_part = "http://purl.org/dc/terms/hasPart";
+    let ik = |t: &str| format!("{}{t}", ikigai_vocab::NS);
+    let typed = |g: &[(String, String, String)], class: &str| -> BTreeSet<String> {
+        g.iter()
+            .filter(|(_, p, o)| p == rdf_type && *o == ik(class))
+            .map(|(s, _, _)| s.clone())
+            .collect()
+    };
+    for cap in [Capability::root(), alice()] {
+        let face = triples(&turtle(&kernel, &cap, &[]));
+        let manifold = triples(&text(
+            &issue(
+                &kernel,
+                Verb::Source,
+                "urn:kernel:actions",
+                &[("as", "text/turtle")],
+                &cap,
+            )
+            .unwrap(),
+        ));
+
+        // Every match the manifold offers is in the grounding, as the same node, with the
+        // same contract and the same door.
+        let matches = typed(&manifold, "ActionMatch");
+        assert!(!matches.is_empty(), "the manifold offers something");
+        let actions_part = face
+            .iter()
+            .find(|(s, p, o)| p == rdf_type && *o == ik("GroundingPart") && s.ends_with(":actions"))
+            .map(|(s, _, _)| s.clone())
+            .expect("an actions part");
+        let parts: BTreeSet<&str> = objects(&face, &actions_part, has_part)
+            .into_iter()
+            .collect();
+        assert_eq!(
+            typed(&face, "ActionMatch"),
+            matches,
+            "the grounding's matches are the manifold's"
+        );
+        for m in &matches {
+            assert!(m.starts_with("urn:ikigai:match:"), "{m}");
+            assert!(parts.contains(m.as_str()), "the actions part holds {m}");
+            // The match states only these, each as the manifold does, so the grounding
+            // unions with the manifold without a second value on any of its rows (the verb
+            // and the scopes are the contract's).
+            for (_, p, _) in face.iter().filter(|(s, _, _)| s == m) {
+                assert!(
+                    [
+                        rdf_type.to_string(),
+                        ik("contract"),
+                        ik("endpoint"),
+                        ik("template")
+                    ]
+                    .contains(p),
+                    "{m} states {p}, which the manifold's row may disagree with"
+                );
+            }
+            for term in ["contract", "endpoint", "template"] {
+                assert_eq!(
+                    objects(&face, m, &ik(term)),
+                    objects(&manifold, m, &ik(term)),
+                    "{m} ik:{term}"
+                );
+            }
+            let [contract] = objects(&face, m, &ik("contract"))[..] else {
+                panic!("{m} has one contract");
+            };
+            assert!(
+                typed(&face, "Action").contains(contract),
+                "the contract {contract} is rendered, as the catalog renders it"
+            );
+        }
+
+        // One node per action: whatever says where to invoke is a match, and every
+        // contract rendered is one some match cites.
+        for (s, p, _) in &face {
+            if *p == ik("endpoint") || *p == ik("template") {
+                assert!(
+                    matches.contains(s),
+                    "{s} says where to invoke but is no match"
+                );
+            }
+        }
+        let cited: BTreeSet<&str> = matches
+            .iter()
+            .flat_map(|m| objects(&face, m, &ik("contract")))
+            .collect();
+        for contract in typed(&face, "Action") {
+            assert!(
+                cited.contains(contract.as_str()),
+                "{contract} is cited by no match"
+            );
+        }
+    }
 }
