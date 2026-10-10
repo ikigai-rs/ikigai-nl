@@ -65,10 +65,13 @@ getrandom = { version = "0.3.4", features = ["wasm_js"] }
 
 [dev-dependencies]
 futures = "0.3"
-# The module recipe as one test. 0.5.1 is the CURRENT definition of "done". ⚠ `"0.5.1"`
-# is `<0.6.0`: raise it when conformance moves, or this crate keeps reporting green
-# against an old rulebook.
-ikigai-conformance = "0.5.1"
+# The module recipe as one test. 0.6.0 is the CURRENT definition of "done" (the newest on
+# crates.io): it adds SPACE-NAME, and `tests/conformance.rs` declares `space(config)`
+# host-named. Its own floor is ikigai-core 0.1.89, below this crate's 0.1.91, so the
+# `[dependencies]` pin above stays the LIBRARY's true minimum and is not raised for the
+# suite. ⚠ `"0.6.0"` is `<0.7.0`: raise it when conformance moves, or this crate keeps
+# reporting green against an old rulebook.
+ikigai-conformance = "0.6.0"
 # The store the graphs part reads, in memory, as a host would mount it. 0.2.5 is where
 # `urn:iki:store:graphs` and several-graph scoped reads arrive; 0.2.7 is the current line.
 ikigai-store = "0.2.7"
