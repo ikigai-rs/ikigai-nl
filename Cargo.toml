@@ -23,8 +23,11 @@ categories = ["development-tools"]
 # core reaches 0.2 this line must move or the crate freezes out of it.
 ikigai-core = "0.1.87"
 # `to_turtle` renders each action exactly as the catalog does (same IRIs, same `ik:`
-# terms), and `VOCAB_IRI` is where the vocabulary is bound. Same release line as core.
-ikigai-vocab = "0.1.87"
+# terms), `VOCAB_IRI` is where the vocabulary is bound, and `NS` is the namespace of every
+# term the grounding and a draft's provenance state that no other vocabulary has. 0.1.88 is
+# the TRUE floor: `ik:Grounding`, `ik:GroundingPart`, `ik:shownItems`, `ik:draftValid` and
+# the rest of those terms exist only from it (ledger #974). ⚠ `"0.1.88"` is `<0.2.0`.
+ikigai-vocab = "0.1.88"
 # `Endpoint::invoke` is `async_trait`, and the grounding endpoint carries its config.
 async-trait = "0.1"
 # The JSON face, and reading the JSON faces of what it composes (descriptions, SPARQL

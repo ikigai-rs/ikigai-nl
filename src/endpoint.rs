@@ -241,9 +241,9 @@ impl Endpoint for GroundingEndpoint {
                  read contributes nothing, not even its name. Each part names the resource it \
                  came from and a sha256 identity, and the grounding is named by the sha256 of \
                  its parts, so a draft can cite exactly what it saw. Bounded: a part that \
-                 shows fewer items than were offered says so (`nl:shown` of `nl:of`), and a \
-                 grounding over the host's size bound is refused with its size, never \
-                 truncated. Cached per capability, recomputed when a graph, a description or \
+                 shows fewer items than were offered says so (`ik:shownItems` of \
+                 `ik:offeredItems`), and a grounding over the host's size bound is refused \
+                 with its size, never truncated. Cached per capability, recomputed when a graph, a description or \
                  a script it read changes.",
             )
             .verb(Verb::Meta)
