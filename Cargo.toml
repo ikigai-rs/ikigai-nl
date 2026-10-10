@@ -63,8 +63,21 @@ oxsdatatypes = "0.2.3"
 [target.'cfg(target_family = "wasm")'.dependencies]
 getrandom = { version = "0.3.4", features = ["wasm_js"] }
 
+[features]
+# TEST-ONLY, and it reaches only a DEV-dependency: the library has no oxigraph in it at all
+# (`cargo tree -e normal -i oxigraph` is empty), so turning it on gives a consumer nothing.
+# It compiles oxigraph's HTTP client into the TEST graph, which is what a host gets when another
+# crate in its graph enables `oxigraph/http-client` (rudof_rdf does, so every native host linking
+# ikigai-shacl has it; ledger #1083, #1085). `tests/service_egress.rs` runs under it in CI's
+# `features:` job and proves no door here makes the store fetch a `SERVICE` or `LOAD`.
+http-client-probe = ["oxigraph/http-client"]
+
 [dev-dependencies]
 futures = "0.3"
+# Only for `tests/service_egress.rs`: the control that a plain evaluator in the probe build
+# really reaches a local stub, and the line `http-client-probe` turns the client on through.
+# The store's own line, `0.5.1` (its security floor), so the two unify. ⚠ `<0.6.0`.
+oxigraph = { version = "0.5.1", default-features = false }
 # The module recipe as one test. 0.6.0 is the CURRENT definition of "done" (the newest on
 # crates.io): it adds SPACE-NAME, and `tests/conformance.rs` declares `space(config)`
 # host-named. Its own floor is ikigai-core 0.1.89, below this crate's 0.1.91, so the
@@ -73,5 +86,9 @@ futures = "0.3"
 # reporting green against an old rulebook.
 ikigai-conformance = "0.6.0"
 # The store the graphs part reads, in memory, as a host would mount it. 0.2.5 is where
-# `urn:iki:store:graphs` and several-graph scoped reads arrive; 0.2.7 is the current line.
-ikigai-store = "0.2.7"
+# `urn:iki:store:graphs` and several-graph scoped reads arrive. 0.2.10 is the TRUE floor now:
+# from it every door the dry run reaches refuses `SERVICE` before evaluation, and
+# `ikigai_store::service`'s door checks exist, which `tests/service_egress.rs` uses as the
+# oracle this crate's own refusal must cover (ledger #1085). On 0.2.7 the dry run's door
+# fetched a `SERVICE` in a build with `oxigraph/http-client` on. ⚠ `"0.2.10"` is `<0.3.0`.
+ikigai-store = "0.2.10"
