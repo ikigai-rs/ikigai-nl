@@ -38,8 +38,11 @@ async-trait = "0.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # The grounding's identity: `sha256:` and hex, the ecosystem's tagged digest, so it joins
-# script versions and log hashes in a query instead of colliding with them.
-sha2 = "0.10"
+# script versions and log hashes in a query instead of colliding with them. 0.11 is the line
+# ikigai-script (below) takes, so the library's graph carries ONE sha2 instead of 0.10 beside
+# 0.11 (ledger #1196); the API used here (`Sha256::digest`, iterating its bytes) is unchanged
+# across the two, and 0.11's MSRV is 1.85. ⚠ `"0.11"` is `<0.12.0`.
+sha2 = "0.11"
 # RDF terms and Turtle, from the oxigraph project the store is built on: parsing the
 # vocabulary, and serializing the Turtle face so nothing is escaped by hand. 0.3 / 0.2 are
 # the lines oxigraph 0.5 uses, so a host linking ikigai-store carries one copy.
@@ -54,6 +57,15 @@ spargebra = "0.4.7"
 # A parameter's value is checked against its XSD datatype in that copy. The line oxrdf 0.3
 # already brings. ⚠ `"0.2.3"` is `<0.3.0`.
 oxsdatatypes = "0.2.3"
+# "May this caller read script X?" is asked of the script host's OWN rule,
+# `authority::holds`, never of `Capability::allows`: a grant names one script or a NAMESPACE
+# of them (`urn:cap:script:read:team-*`), and an exclusion takes a script back out, so an
+# exact match disagrees with the host both ways (ledger #1196). 0.3.0 is the TRUE floor:
+# namespace grants and `holds` arrived there (ledger #1174), and `src/authority.rs` has not
+# changed since, so 0.3.1 and 0.3.2 (plan fixes) add nothing this crate uses. Its own
+# `ikigai-core` floor is 0.1.95, above the 0.1.91 this crate's APIs need, so a consumer
+# resolves 0.1.95 either way. ⚠ `"0.3.0"` is `<0.4.0`: move it when the script host moves.
+ikigai-script = "0.3.0"
 
 # oxrdf pulls getrandom 0.3 (through rand, for blank-node ids this crate never mints), and
 # getrandom refuses to compile for wasm32-unknown-unknown until a backend is named. The

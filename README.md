@@ -136,7 +136,11 @@ re-query, and `urn:kernel:uncached` names `urn:script:catalog` as the reason.
 `Examples::Named(names)` reads the named scripts one by one instead; each read is cached
 and cut when that script is republished, so the grounding stays cached. Name scripts every
 caller may read (public ones): a caller holding `urn:cap:script:read:public` but not a
-private script's grant is refused that one read, and a refusal is never cached.
+private script's grant is refused that one read, and a refusal is never cached. A name
+the caller cannot reach at all is never asked about, judged by the script host's own rule
+(`ikigai_script::authority::holds`): the script's read grant or a namespace grant covering
+it (`urn:cap:script:read:team-*` reaches `team-report`), or `…:read:public`, less any
+exclusion (`…:read:-team-report`, `…:read:-team-*`) that names it.
 
 ## The graph queries are stored SPARQL
 

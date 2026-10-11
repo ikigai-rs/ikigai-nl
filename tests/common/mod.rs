@@ -3,13 +3,15 @@
 //! - **The store** (`ikigai-store`, in memory) with two named graphs, `LEDGER` and `BOOKS`,
 //!   and a triple in its default graph that no scoped read can reach.
 //! - **The vocabulary** (`ikigai_vocab::space()`), the real one.
-//! - **A stand-in for `ikigai-script`**, because that crate is not published yet and a
-//!   committed path or git override is not an option. It speaks the published JSON shapes
-//!   field for field (`Catalog`, the script document) and enforces the same grants:
-//!   `urn:cap:script:read:{name}`, or `urn:cap:script:read:public` for a public published
-//!   script, and the catalog lists only what the caller may read. Its catalog is LIVE, as
-//!   the real one is. ⚠ When `ikigai-script` publishes, replace this with the real crate
-//!   as a dev-dependency: a stand-in is a second copy of a contract, and copies drift.
+//! - **A stand-in for `ikigai-script`'s space**, written before that crate was published.
+//!   It speaks the published JSON shapes field for field (`Catalog`, the script document)
+//!   and enforces the same grants, by asking the host's own rule
+//!   (`ikigai_script::authority::holds`, a dependency of the library since ledger #1196):
+//!   the script's read grant or a namespace grant covering it, or
+//!   `urn:cap:script:read:public` for a public published script, and no exclusion naming
+//!   it; the catalog lists only what the caller may read. Its catalog is LIVE, as the real
+//!   one is. ⚠ The crate IS published now: replacing the rest of this stand-in with its real
+//!   space is still open, because a stand-in is a second copy of a contract, and copies drift.
 //!   It also takes a Sink (a draft or a publish), analyzing a SPARQL script with
 //!   `ikigai_nl::script_sparql`, which is ikigai-script's own analysis copied byte for byte,
 //!   and refusing a publisher who does not hold the derived authority, as the real one does.
@@ -33,6 +35,7 @@ use ikigai_core::{
     Fallback, Invocation, Iri, Kernel, ReprType, Representation, Request, Space, UriTemplate, Verb,
 };
 use ikigai_nl::{Grounding, SpaceConfig};
+use ikigai_script::authority::{self, Act};
 use ikigai_store::{space as store_space, DurableStore};
 
 pub const LEDGER: &str = "urn:example:ledger";
@@ -93,11 +96,16 @@ fn version(script: &Script) -> String {
     ikigai_nl::model::sha256(script.source.as_bytes())
 }
 
+/// The script host's read rule, asked of the host's own code (`authority::holds` and
+/// `authority::excluded`), so the stand-in cannot drift from it: the script's grant or a
+/// namespace grant covering it, or, for a public published script, `…:read:public`; and no
+/// exclusion naming it either way.
 fn may_read(cap: &Capability, script: &Script) -> bool {
-    cap.allows(&format!("urn:cap:script:read:{}", script.name))
+    authority::holds(cap, Act::Read, script.name)
         || (script.public
             && script.state == "published"
-            && cap.allows("urn:cap:script:read:public"))
+            && cap.allows("urn:cap:script:read:public")
+            && !authority::excluded(cap, Act::Read, script.name))
 }
 
 fn json(value: serde_json::Value) -> Representation {
@@ -261,10 +269,7 @@ impl Endpoint for StandInScript {
         }
         let kept = self.saved.lock().unwrap().get(name).cloned();
         if let Some(kept) = kept {
-            if !inv
-                .capability
-                .allows(&format!("urn:cap:script:read:{name}"))
-            {
+            if !authority::holds(inv.capability, Act::Read, name) {
                 return Err(Error::Denied(format!(
                     "this capability holds none of urn:cap:script:read:{name}"
                 )));

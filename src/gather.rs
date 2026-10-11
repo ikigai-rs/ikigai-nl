@@ -16,9 +16,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use ikigai_core::{
-    ArgRef, Bindings, Description, Error, Invocation, Iri, Representation, Request, Result,
-    UriTemplate, Verb,
+    ArgRef, Bindings, Capability, Description, Error, Invocation, Iri, Representation, Request,
+    Result, UriTemplate, Verb,
 };
+use ikigai_script::authority::{self, Act, CAP_READ_PUBLIC};
 use oxrdf::{NamedOrBlankNode, Term as RdfTerm};
 use serde::Deserialize;
 
@@ -580,6 +581,17 @@ struct ScriptDocument {
     parameters: Option<serde_json::Value>,
 }
 
+/// Whether asking the script host for `name` could be answered rather than refused: the
+/// caller may read it by the host's own rule ([`authority::holds`]: the script's grant or a
+/// namespace grant covering it, and no exclusion naming it), or holds `…:read:public` and is
+/// not excluded from it, which reaches the script if it turns out to be public and
+/// published. The host decides the second; this only avoids asking where the answer can
+/// only be `Denied`.
+fn may_read_script(capability: &Capability, name: &str) -> bool {
+    authority::holds(capability, Act::Read, name)
+        || (capability.allows(CAP_READ_PUBLIC) && !authority::excluded(capability, Act::Read, name))
+}
+
 pub(crate) async fn examples(
     inv: &Invocation<'_>,
     manifold: &Manifold,
@@ -649,13 +661,12 @@ pub(crate) async fn examples(
             break;
         }
         // A configured name the caller holds no read grant for is not asked about: the
-        // answer would be a refusal, and a refusal is never cached.
-        if named
-            && !inv
-                .capability
-                .allows(&format!("urn:cap:script:read:{name}"))
-            && !inv.capability.allows("urn:cap:script:read:public")
-        {
+        // answer would be a refusal, and a refusal is never cached. ★ Asked of the script
+        // host's OWN rule (ledger #1196), never `Capability::allows`: a grant names the
+        // script or a NAMESPACE it is in (`…:read:team-*`), and an exclusion takes it back
+        // out, `…:read:public` included. Whether the script is public is the host's to say,
+        // so `…:read:public` still asks.
+        if named && !may_read_script(inv.capability, &name) {
             continue;
         }
         let target = format!("urn:script:{name}");
