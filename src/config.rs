@@ -103,7 +103,21 @@ pub struct Llm {
     pub escalate: Option<Escalation>,
     /// The `temperature=` each draft is asked at; `None` leaves the backend's default.
     pub temperature: Option<String>,
+    /// The `max_tokens=` bound each draft is asked under (ledger #1203); `None` sends no
+    /// bound and leaves the backend's own, which for a reasoning model can be its whole
+    /// budget spent thinking. [`DEFAULT_MAX_TOKENS`] unless the host sets it.
+    pub max_tokens: Option<u32>,
 }
+
+/// The default [`Llm::max_tokens`]: 2048 tokens per draft.
+///
+/// A drafted query in its fenced block is well under a thousand tokens, so the bound is
+/// about time and spend, not room. At a local model's 30 to 60 tokens a second it is 35 to
+/// 70 seconds an attempt, so the default three attempts fit inside a 300-second request
+/// bound (gonk's over QUIC). A model that runs past it is cut off, its answer fails the
+/// check, and the attempt is repaired or answered as failed: a bounded failure, never a
+/// hang. A host drafting with a reasoning model that needs longer raises it.
+pub const DEFAULT_MAX_TOKENS: u32 = 2048;
 
 /// From the attempt after `after` failed ones, draft with a backend meeting `needs`.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -122,6 +136,7 @@ impl Default for Llm {
             needs: None,
             escalate: None,
             temperature: Some("0".to_string()),
+            max_tokens: Some(DEFAULT_MAX_TOKENS),
         }
     }
 }
@@ -136,6 +151,22 @@ impl Llm {
     /// Set [`escalate`](Llm::escalate).
     pub fn escalate(mut self, escalation: Escalation) -> Self {
         self.escalate = Some(escalation);
+        self
+    }
+
+    /// Set [`max_tokens`](Llm::max_tokens): at least 1, since a bound of none is not a
+    /// bound (`ikigai-llm` refuses `max_tokens=0`). To send no bound at all, set the field
+    /// to `None`.
+    ///
+    /// ```
+    /// use ikigai_nl::{Llm, DEFAULT_MAX_TOKENS};
+    ///
+    /// assert_eq!(Llm::default().max_tokens, Some(DEFAULT_MAX_TOKENS));
+    /// assert_eq!(Llm::default().max_tokens(512).max_tokens, Some(512));
+    /// assert_eq!(Llm::default().max_tokens(0).max_tokens, Some(1));
+    /// ```
+    pub fn max_tokens(mut self, tokens: u32) -> Self {
+        self.max_tokens = Some(tokens.max(1));
         self
     }
 
@@ -170,8 +201,8 @@ impl Default for SpaceConfig {
 impl SpaceConfig {
     /// The defaults: 1 MiB, 32 graphs, 25 classes and 25 predicates and 5 samples per
     /// graph, 16 examples from the catalog; for the drafter, the host's default model at
-    /// temperature 0, three attempts, five preview rows, three worked examples, and the
-    /// store at `urn:iki:store:`.
+    /// temperature 0 and at most [`DEFAULT_MAX_TOKENS`] tokens a draft, three attempts, five
+    /// preview rows, three worked examples, and the store at `urn:iki:store:`.
     pub fn new() -> Self {
         Self::default()
     }
