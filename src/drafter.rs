@@ -40,6 +40,27 @@ pub const SPARQL_IRI: &str = "urn:nl:sparql";
 /// The version of a draft's JSON face.
 pub const DRAFT_SCHEMA: u32 = 1;
 
+/// What a draft saved without `save=` is named with: `nl-sparql-` and the first 12
+/// lowercase hex digits of the drafting's digest (`nl-sparql-3f9c0a12b4de`).
+///
+/// ★ **A host can grant those names ahead of time** (ledger #1203): the prefix ends at a
+/// `-`, so it is a script NAMESPACE, and `urn:cap:script:write:nl-sparql-*` covers every
+/// default name, once the host runs ikigai-script 0.3.0 or later (namespace grants arrived
+/// there, ledger #1174). Under an earlier script host grants are matched per name, and a
+/// default name can never be granted before it is drafted, so below root such a draft is
+/// answered **unsaved**. ⚠ The grant is the caller's, not the drafter's: it lets its
+/// holder write any script in the namespace, through the script host directly as well as
+/// by drafting, so grant it as you would any write. A draft is still saved only when the
+/// caller holds its query's derived authority.
+///
+/// ```
+/// use ikigai_nl::DRAFT_NAME_PREFIX;
+///
+/// let grant = format!("urn:cap:script:write:{DRAFT_NAME_PREFIX}*");
+/// assert_eq!(grant, "urn:cap:script:write:nl-sparql-*");
+/// ```
+pub const DRAFT_NAME_PREFIX: &str = "nl-sparql-";
+
 /// The line that opens a saved draft's provenance block.
 pub const PROV_MARKER: &str = "# Provenance (PROV-O as N-Triples):";
 
@@ -273,6 +294,12 @@ async fn ask_model(
     let mut args = vec![("prompt", prompt), ("as", JSON)];
     if let Some(t) = llm.temperature.as_deref() {
         args.push(("temperature", t));
+    }
+    // ikigai-llm declares `max_tokens` `xsd:positiveInteger`, so a 0 set on the field
+    // directly is sent as 1 rather than refused.
+    let max_tokens = llm.max_tokens.map(|n| n.max(1).to_string());
+    if let Some(n) = max_tokens.as_deref() {
+        args.push(("max_tokens", n));
     }
     let rep = inv.issue(request(Verb::Source, &backend, &args)?).await?;
     let answer: Answer = serde_json::from_slice(&rep.bytes)
@@ -537,7 +564,10 @@ impl SparqlEndpoint {
             let activity = activity(ask, focus, &grounding, &prompts, &attempts);
             name = match save {
                 Some(s) => s.to_string(),
-                None => format!("nl-sparql-{}", &activity[activity.len() - 64..][..12]),
+                None => format!(
+                    "{DRAFT_NAME_PREFIX}{}",
+                    &activity[activity.len() - 64..][..12]
+                ),
             };
             let script = format!("urn:script:{name}");
             let text = saved_text(
@@ -594,7 +624,10 @@ impl SparqlEndpoint {
         if name.is_empty() {
             name = match save {
                 Some(s) => s.to_string(),
-                None => format!("nl-sparql-{}", &activity[activity.len() - 64..][..12]),
+                None => format!(
+                    "{DRAFT_NAME_PREFIX}{}",
+                    &activity[activity.len() - 64..][..12]
+                ),
             };
         }
         let script = format!("urn:script:{name}");
@@ -824,8 +857,10 @@ impl Endpoint for SparqlEndpoint {
                             .summary(
                                 "The script name to save the draft under (needs \
                                  `urn:cap:script:write:{save}`); `nl-sparql-` and a digest \
-                                 of the drafting when absent. A published script is never \
-                                 replaced.",
+                                 of the drafting when absent, which a script host from \
+                                 ikigai-script 0.3.0 lets a caller holding \
+                                 `urn:cap:script:write:nl-sparql-*` save. A published \
+                                 script is never replaced.",
                             )
                             .class(XSD_STRING)
                             .optional(),

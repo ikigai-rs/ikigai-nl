@@ -563,7 +563,21 @@ fn re_drafting_a_draft_replaces_it_and_root_gets_a_derived_name() {
 
     let d = draft(&h, &Capability::root(), &[("ask", "again")]);
     assert_eq!(d.status, Status::Saved);
-    assert!(d.name.starts_with("nl-sparql-") && d.name.len() == "nl-sparql-".len() + 12);
+    // The shape `urn:cap:script:write:nl-sparql-*` covers under ikigai-script 0.3.0's
+    // namespace grants (ledger #1203): the prefix, then 12 lowercase hex digits.
+    let digits = d
+        .name
+        .strip_prefix(ikigai_nl::DRAFT_NAME_PREFIX)
+        .unwrap_or_else(|| panic!("{}", d.name));
+    assert_eq!(ikigai_nl::DRAFT_NAME_PREFIX, "nl-sparql-");
+    assert_eq!(digits.len(), 12, "{}", d.name);
+    assert!(
+        digits
+            .chars()
+            .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c)),
+        "{}",
+        d.name
+    );
     assert!(h.saved(&d.name).is_some());
 }
 
@@ -604,4 +618,82 @@ fn the_check_is_a_resource_of_its_own() {
         .warnings
         .iter()
         .any(|w| w.contains("as far as the grounding shows")));
+}
+
+#[test]
+fn every_draft_is_asked_under_a_token_bound() {
+    // Ledger #1203: an ask with no `max_tokens` lets a reasoning model spend its whole
+    // budget thinking. The default config bounds every draft, repairs included.
+    let h = drafting_host(
+        SpaceConfig::new(),
+        &[(
+            "bound me",
+            &[&good("http://purl.org/dc/terms/name"), &good(TITLE)],
+        )],
+    );
+    let d = draft(
+        &h,
+        &writer(&["bound"]),
+        &[("ask", "bound me"), ("save", "bound")],
+    );
+    assert_eq!(d.status, Status::Saved, "{d:#?}");
+    let calls = h.prompts();
+    assert_eq!(calls.len(), 2, "a draft and its repair");
+    for call in &calls {
+        assert_eq!(call.max_tokens.as_deref(), Some("2048"), "{}", call.backend);
+        assert_eq!(call.temperature.as_deref(), Some("0"), "{}", call.backend);
+    }
+    assert_eq!(ikigai_nl::DEFAULT_MAX_TOKENS, 2048);
+}
+
+#[test]
+fn the_token_bound_is_the_hosts_and_reaches_an_escalated_backend_too() {
+    let config = SpaceConfig::new().llm(Llm::default().max_tokens(512).escalate(Escalation {
+        after: 1,
+        needs: "cost<=premium".to_string(),
+    }));
+    let h = drafting_host(
+        config,
+        &[(
+            "bound and escalate",
+            &[&good("http://purl.org/dc/terms/name"), &good(TITLE)],
+        )],
+    );
+    let d = draft(
+        &h,
+        &writer(&["bounded"]),
+        &[("ask", "bound and escalate"), ("save", "bounded")],
+    );
+    assert_eq!(d.status, Status::Saved, "{d:#?}");
+    let sent: Vec<_> = h
+        .prompts()
+        .into_iter()
+        .map(|c| (c.backend, c.max_tokens))
+        .collect();
+    assert_eq!(
+        sent,
+        vec![
+            ("urn:llm:ask".to_string(), Some("512".to_string())),
+            ("urn:llm:big:ask".to_string(), Some("512".to_string())),
+        ]
+    );
+}
+
+#[test]
+fn a_host_may_send_no_token_bound() {
+    let llm = Llm {
+        max_tokens: None,
+        ..Llm::default()
+    };
+    let h = drafting_host(
+        SpaceConfig::new().llm(llm),
+        &[("unbounded ask", &[&good(TITLE)])],
+    );
+    let d = draft(
+        &h,
+        &writer(&["unbounded"]),
+        &[("ask", "unbounded ask"), ("save", "unbounded")],
+    );
+    assert_eq!(d.status, Status::Saved, "{d:#?}");
+    assert_eq!(h.prompts()[0].max_tokens, None);
 }

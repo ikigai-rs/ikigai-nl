@@ -386,6 +386,10 @@ pub struct Call {
     /// The door it arrived at (`urn:llm:ask`, `urn:llm:big:ask`).
     pub backend: String,
     pub prompt: String,
+    /// The `temperature=` it was asked at, when one was sent.
+    pub temperature: Option<String>,
+    /// The `max_tokens=` bound it was asked under, when one was sent (ledger #1203).
+    pub max_tokens: Option<String>,
 }
 
 /// The stub's script and its record.
@@ -432,7 +436,12 @@ impl Endpoint for StubAsk {
             }
             None => DEFAULT_DRAFT.to_string(),
         };
-        stub.calls.push(Call { backend, prompt });
+        stub.calls.push(Call {
+            backend,
+            prompt,
+            temperature: arg(inv, "temperature").map(str::to_string),
+            max_tokens: arg(inv, "max_tokens").map(str::to_string),
+        });
         // ikigai-llm's `as=application/json` envelope, the draft fenced as a model would.
         Ok(json(serde_json::json!({
             "text": format!("Here is the query.\n```sparql\n{draft}\n```\n"),
@@ -459,6 +468,11 @@ impl Endpoint for StubAsk {
                 .input(
                     ArgSpec::new("temperature")
                         .class("http://www.w3.org/2001/XMLSchema#decimal")
+                        .optional(),
+                )
+                .input(
+                    ArgSpec::new("max_tokens")
+                        .class("http://www.w3.org/2001/XMLSchema#positiveInteger")
                         .optional(),
                 )
                 .input(

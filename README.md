@@ -173,7 +173,12 @@ CALLER's capability, never more:
    the default backend at `urn:llm:ask`, or `urn:llm:select` under the host's `needs` or
    its escalation policy (`Escalation { after, needs }`: local first, a frontier model only
    after that many failed attempts). The model is asked for the query and, where the ask
-   implies them, its parameters in ikigai-script's `# @param` form.
+   implies them, its parameters in ikigai-script's `# @param` form. **Every draft is asked
+   under a token bound**, `max_tokens=` (`Llm::max_tokens`, default `DEFAULT_MAX_TOKENS` =
+   2048): a query is well under a thousand tokens, and without a bound a reasoning model
+   can spend its whole budget thinking. At a local model's 30 to 60 tokens a second the
+   default keeps three attempts inside a 300-second request bound; an answer cut off by it
+   fails the check like any other bad draft.
 3. **Validate**: `urn:nl:sparql:check`, a resource of its own (so a person editing a draft
    can ask the same question):
    - bounded before the parser sees a byte and parsed, by the script host's own analysis
@@ -197,7 +202,12 @@ CALLER's capability, never more:
    model in the tests cannot say). Measure it once real drafts accumulate.
 5. **Always a draft**: the valid draft is saved with a Sink on `urn:script:{name}`
    (`language=sparql`, `state=draft`, `if-version` so a concurrent writer is noticed),
-   under the caller, named by `save=` or `nl-sparql-` and a digest of the drafting. The
+   under the caller, named by `save=` or `nl-sparql-` and a digest of the drafting
+   (`DRAFT_NAME_PREFIX`). ★ **Those default names can be granted ahead of time** as
+   `urn:cap:script:write:nl-sparql-*`, a namespace grant, once the host runs ikigai-script
+   0.3.0 or later; under an earlier script host grants match per name and a default name
+   can only be saved by root. The grant is the caller's, so it also lets them write any
+   `nl-sparql-` script directly: grant it as any write. The
    script host analyzes it again and refuses a draft whose derived authority the caller
    does not hold: that is the last validation, and an `InvalidArgument` there is fed back
    like any other. A published script is never replaced (refused before any model is
@@ -246,7 +256,11 @@ own binds the same names in front of this crate's space.
 use ikigai_nl::{Escalation, Llm, SpaceConfig};
 
 let config = SpaceConfig::new()
-    .llm(Llm::default().escalate(Escalation { after: 2, needs: "cost<=premium".into() }))
+    .llm(
+        Llm::default()
+            .max_tokens(2048)   // the bound on each draft's answer (the default)
+            .escalate(Escalation { after: 2, needs: "cost<=premium".into() }),
+    )
     .max_attempts(3)   // drafts per ask, clamped to 1..=8
     .preview_rows(5)
     .prompt_examples(3)
