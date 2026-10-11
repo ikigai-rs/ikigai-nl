@@ -54,10 +54,20 @@ pub const DRAFT_SCHEMA: u32 = 1;
 /// caller holds its query's derived authority.
 ///
 /// ```
+/// use ikigai_core::Capability;
 /// use ikigai_nl::DRAFT_NAME_PREFIX;
+/// use ikigai_script::authority::{cap_namespace, holds, Act};
 ///
 /// let grant = format!("urn:cap:script:write:{DRAFT_NAME_PREFIX}*");
 /// assert_eq!(grant, "urn:cap:script:write:nl-sparql-*");
+/// // The script host's own rule agrees that it is a namespace grant covering a default
+/// // name, and nothing outside the namespace (ledger #1196).
+/// let namespace = DRAFT_NAME_PREFIX.trim_end_matches('-');
+/// assert_eq!(cap_namespace(Act::Write, namespace).unwrap(), grant);
+/// let caller = Capability::scoped([grant]);
+/// assert!(holds(&caller, Act::Write, &format!("{DRAFT_NAME_PREFIX}3f9c0a12b4de")));
+/// assert!(!holds(&caller, Act::Write, "nl-other"));
+/// assert!(!holds(&caller, Act::Read, &format!("{DRAFT_NAME_PREFIX}3f9c0a12b4de")));
 /// ```
 pub const DRAFT_NAME_PREFIX: &str = "nl-sparql-";
 

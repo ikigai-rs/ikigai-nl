@@ -409,3 +409,54 @@ fn a_configured_example_the_caller_may_not_read_contributes_nothing_not_even_a_c
     let names: Vec<_> = b.examples.items.iter().map(|e| e.name.as_str()).collect();
     assert_eq!(names, vec!["book-titles"]);
 }
+
+/// Ledger #1196: a configured example is asked about when the script host's OWN rule says
+/// the caller may read it, and a namespace grant (`urn:cap:script:read:book-*`) covers
+/// `book-titles` there. An exact `Capability::allows` on `…:read:book-titles` misses it,
+/// and the example was silently dropped.
+#[test]
+fn a_namespace_read_grant_reaches_a_configured_example_in_its_namespace() {
+    let kernel = host(SpaceConfig::new().examples(Examples::Named(vec![
+        "stale-urgent".to_string(),
+        "book-titles".to_string(),
+    ])));
+    let carol = Capability::scoped(["urn:cap:script:read:book-*"]);
+    let g = grounding(&kernel, &carol, &[]);
+    let names: Vec<_> = g.examples.items.iter().map(|e| e.name.as_str()).collect();
+    // The namespace covers `book-titles`; it does not reach the public `stale-urgent`,
+    // which takes `…:read:public` or its own grant.
+    assert_eq!(names, vec!["book-titles"]);
+    assert_eq!((g.examples.shown, g.examples.of), (1, 1));
+    // The positive control for the grant's shape: a namespace is a prefix ending at `-`,
+    // so `urn:cap:script:read:book*` covers nothing.
+    let unshaped = Capability::scoped(["urn:cap:script:read:book*"]);
+    assert!(grounding(&kernel, &unshaped, &[]).examples.items.is_empty());
+}
+
+/// Ledger #1196, the other direction: an exclusion takes a script back out of every grant,
+/// `…:read:public` included, so a configured example the caller is excluded from is not
+/// asked about. Asking would be refused, and a refusal is never cached, so the whole
+/// grounding would recompute on every read. Named examples otherwise cache.
+#[test]
+fn an_excluded_configured_example_is_not_asked_about_so_the_grounding_still_caches() {
+    let kernel =
+        host(SpaceConfig::new().examples(Examples::Named(vec!["stale-urgent".to_string()])));
+    // The control: with `…:read:public` alone the example is shown, and the answer caches.
+    let public = Capability::scoped(["urn:cap:script:read:public"]);
+    let rep = issue(&kernel, Verb::Source, "urn:nl:grounding", &[], &public).unwrap();
+    assert_eq!(rep.expiry, Expiry::Never);
+    assert_eq!(grounding(&kernel, &public, &[]).examples.items.len(), 1);
+    // Excluded by name, and by namespace: nothing shown, nothing refused, still cached.
+    for exclusion in [
+        "urn:cap:script:read:-stale-urgent",
+        "urn:cap:script:read:-stale-*",
+    ] {
+        let cap = Capability::scoped(["urn:cap:script:read:public", exclusion]);
+        let rep = issue(&kernel, Verb::Source, "urn:nl:grounding", &[], &cap).unwrap();
+        assert_eq!(rep.expiry, Expiry::Never, "{exclusion}");
+        assert!(
+            grounding(&kernel, &cap, &[]).examples.items.is_empty(),
+            "{exclusion}"
+        );
+    }
+}
