@@ -414,3 +414,93 @@ fn focus_is_the_drafters_argument_and_graph_its_alias_for_one_release() {
         "{err}"
     );
 }
+
+// ------------------------------------------------------------------- ledger #1298
+
+/// One drafting's three faces, each from a fresh host (the stub's script is per host).
+fn faces(answers: &[&str], save: &str) -> (serde_json::Value, String, String) {
+    let face = |want: &str| {
+        let h = drafting_host(SpaceConfig::new(), &[(ASK, answers)]);
+        seed_ledger(&h);
+        text(
+            &issue(
+                &h.kernel,
+                Verb::Sink,
+                "urn:nl:sparql",
+                &[
+                    ("ask", ASK),
+                    ("focus", "ledger"),
+                    ("save", save),
+                    ("as", want),
+                ],
+                &person(),
+            )
+            .unwrap(),
+        )
+    };
+    let json = serde_json::from_str(&face("application/json")).unwrap();
+    (json, face("text/plain"), face("text/turtle"))
+}
+
+#[test]
+fn a_repeat_says_drafting_stopped_and_is_recorded_as_a_repeat_not_a_failure() {
+    // The model gives the demo's draft, then the same draft again: two asks of a bound of 3.
+    let (json, plain, turtle) = faces(&[&broken()], "demo-repeat");
+    let attempts = json["attempts"].as_array().unwrap();
+    assert_eq!(attempts.len(), 2, "{json:#}");
+    assert_eq!(json["status"], "saved", "{json:#}");
+
+    // What happened, said in so many words: no "within the bound of 3" after 2 asks.
+    let note = json["note"].as_str().unwrap();
+    assert!(
+        note.contains("drafting stopped: the model repeated attempt 1"),
+        "{note}"
+    );
+    assert!(!note.contains("within the bound"), "{note}");
+    let first = plain.lines().next().unwrap();
+    assert!(
+        first.contains("drafting stopped: the model repeated attempt 1"),
+        "{plain}"
+    );
+    assert!(!first.contains("within the bound"), "{plain}");
+
+    // The repeat is a REPEAT, a field of its own; the attempt it repeats is not one.
+    assert_eq!(attempts[1]["repeatOf"], 1, "{json:#}");
+    assert!(attempts[0].get("repeatOf").is_none(), "{json:#}");
+    assert_eq!(attempts[1]["valid"], false, "it was not a new valid draft");
+
+    // And the provenance says so: the repeat is an alternate of the attempt it repeats.
+    let a = json["activity"].as_str().unwrap();
+    let alternate =
+        format!("<{a}:attempt:2> <http://www.w3.org/ns/prov#alternateOf> <{a}:attempt:1> .");
+    assert!(turtle.contains(&alternate), "{turtle}");
+    assert!(json["prov"].as_str().unwrap().contains(&alternate));
+}
+
+#[test]
+fn drafting_that_runs_to_the_bound_still_says_the_bound() {
+    // Three different empty drafts: no repeat, so the bound is what stopped drafting.
+    let other =
+        |n: u32| broken().replace("ORDER BY ?number", &format!("ORDER BY ?number LIMIT {n}"));
+    let (json, plain, _) = faces(&[&other(10), &other(11), &other(12)], "demo-bound");
+    assert_eq!(json["attempts"].as_array().unwrap().len(), 3, "{json:#}");
+    let note = json["note"].as_str().unwrap();
+    assert!(
+        note.contains("no attempt within the bound of 3 did better"),
+        "{note}"
+    );
+    assert!(!note.contains("repeated"), "{note}");
+    assert!(json["attempts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|a| a.get("repeatOf").is_none()));
+    assert!(
+        plain
+            .lines()
+            .next()
+            .unwrap()
+            .contains("within the bound of 3"),
+        "{plain}"
+    );
+}

@@ -229,7 +229,14 @@ CALLER's capability, never more:
    is empty, with the empty-preview warning and its evidence (ledger #1242). **The bound is 3 attempts** by
    default (`max_attempts`, at most `MAX_ATTEMPTS` = 8), and drafting also stops the first
    time the model answers a draft it already gave, because a model repeating itself is not
-   converging. 3 is a cost bound, not a measured optimum: each attempt is one model call,
+   converging. ★ **A repeat is recorded as a REPEAT, not a failure** (ledger #1298): the
+   attempt carries `repeatOf: N` in the JSON face (`Attempt::repeat_of`, absent on every
+   other attempt), `prov:alternateOf` the attempt it repeats in the provenance, `valid`
+   false because it was not checked again, and one error naming the attempt it repeats. So
+   a consumer counting failed drafts counts the attempts that are neither valid nor a
+   repeat. The answer then says what happened, `drafting stopped: the model repeated
+   attempt N`, in its `note` and the plain answer's first line, never "no attempt within
+   the bound" when the bound was not reached. 3 is a cost bound, not a measured optimum: each attempt is one model call,
    and no corpus of real drafts exists yet to measure where repair stops paying (the stub
    model in the tests cannot say). Measure it once real drafts accumulate.
 5. **Always a draft**: the valid draft is saved with a Sink on `urn:script:{name}`
@@ -272,6 +279,8 @@ graph is the answer's `as=text/turtle` face, and the JSON face carries it as `pr
     prov:value "the query" ; dcterms:identifier "sha256:…" ;
     ik:draftValid false ; ik:draftError "…" ; ik:draftWarning "…" .
 <urn:nl:sparql:drafting:{hex}:attempt:2> … prov:wasRevisionOf <…:attempt:1> .
+<urn:nl:sparql:drafting:{hex}:attempt:3> … prov:wasRevisionOf <…:attempt:2> ;
+    prov:alternateOf <…:attempt:2> .   # a repeat: the same draft as attempt 2, so drafting stopped
 <urn:script:{name}> prov:wasGeneratedBy <urn:nl:sparql:drafting:{hex}> ;
     prov:wasDerivedFrom <…:attempt:2> .
 ```

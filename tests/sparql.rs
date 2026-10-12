@@ -210,6 +210,16 @@ fn a_draft_reaching_a_graph_the_caller_cannot_read_is_refused_without_leaking_it
     // The second answer repeated the first, so drafting stopped there.
     assert_eq!(d.attempts.len(), 2);
     assert!(d.attempts[1].errors[0].contains("same draft as attempt 1"));
+    // Said as what happened, and the repeat marked as one (ledger #1298).
+    let note = d.note.as_deref().unwrap();
+    assert!(
+        note.contains("drafting stopped: the model repeated attempt 1"),
+        "{note}"
+    );
+    assert!(!note.contains("the bound is"), "{note}");
+    let json = serde_json::to_value(&d).unwrap();
+    assert_eq!(json["attempts"][1]["repeatOf"], 1, "{json:#}");
+    assert!(json["attempts"][0].get("repeatOf").is_none(), "{json:#}");
     assert!(
         d.attempts[0].errors[0].contains("not a graph this caller may read"),
         "{:?}",
