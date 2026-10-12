@@ -300,15 +300,6 @@ Counts are `xsd:integer`. A test holds the renderers to the vocabulary: every `i
 either face states must be defined there, and every term in the table above must still be
 stated.
 
-## Copies, until ikigai-script publishes
-
-`src/script_sparql.rs` and `src/limits.rs` are byte-for-byte copies of ikigai-script's
-`sparql.rs` and `limits.rs` (the latter itself ikigai-store's), changed only where they
-name their crate. The check must analyze a draft exactly as the script host will when it
-is saved, and ikigai-script is not published. When it is, both go and this crate depends
-on it. The test host's stand-in for the script host analyzes with the same copy, so it is
-faithful to the real Sink's rules, not to a second reading of them.
-
 ## Not in this version
 
 - **`urn:nl:script`**, the plan-then-Lisp drafter: the next arc. It can reuse the

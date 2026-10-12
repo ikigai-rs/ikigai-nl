@@ -56,17 +56,9 @@ pub mod drafter;
 mod endpoint;
 mod focus;
 mod gather;
-#[doc(hidden)]
-pub mod limits;
 pub mod model;
 pub mod prompt;
 mod render;
-// A copy of `ikigai-script`'s SPARQL analysis (see the file's header). Public only so its
-// doctests run and a test double of the script host can analyze exactly as the real one
-// does; it goes when `ikigai-script` is published and this crate depends on it. (A `//`
-// comment, not `///`: an outer doc would make rustdoc resolve the copy's inner links here.)
-#[doc(hidden)]
-pub mod script_sparql;
 
 use std::sync::Arc;
 

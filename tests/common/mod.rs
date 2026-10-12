@@ -3,18 +3,12 @@
 //! - **The store** (`ikigai-store`, in memory) with two named graphs, `LEDGER` and `BOOKS`,
 //!   and a triple in its default graph that no scoped read can reach.
 //! - **The vocabulary** (`ikigai_vocab::space()`), the real one.
-//! - **A stand-in for `ikigai-script`'s space**, written before that crate was published.
-//!   It speaks the published JSON shapes field for field (`Catalog`, the script document)
-//!   and enforces the same grants, by asking the host's own rule
-//!   (`ikigai_script::authority::holds`, a dependency of the library since ledger #1196):
-//!   the script's read grant or a namespace grant covering it, or
-//!   `urn:cap:script:read:public` for a public published script, and no exclusion naming
-//!   it; the catalog lists only what the caller may read. Its catalog is LIVE, as the real
-//!   one is. ⚠ The crate IS published now: replacing the rest of this stand-in with its real
-//!   space is still open, because a stand-in is a second copy of a contract, and copies drift.
-//!   It also takes a Sink (a draft or a publish), analyzing a SPARQL script with
-//!   `ikigai_nl::script_sparql`, which is ikigai-script's own analysis copied byte for byte,
-//!   and refusing a publisher who does not hold the derived authority, as the real one does.
+//! - **`ikigai-script`'s real space** (`ikigai_script::space`, a `MemoryBackend`, the store's
+//!   SPARQL door, no ceiling), holding three scripts published by root: one public, one
+//!   private, one draft. The catalog, each script's read rule, a draft's privacy and the
+//!   Sink a draft is saved with (its analysis, its derived authority, no elevation,
+//!   `if-version`) are the host's own, so this crate is tested against the contract it
+//!   composes, not a second copy of it (ledger #1244 retired the hand-written stand-in).
 //! - **A deterministic stub LLM** at `urn:llm:ask`, `urn:llm:{provider}:ask` and
 //!   `urn:llm:select`, speaking ikigai-llm's JSON forms. It answers each ask with a canned
 //!   draft per attempt and records every prompt it was sent. No model is ever called.
@@ -25,7 +19,6 @@
 
 #![allow(dead_code)] // each test binary uses a different subset
 
-use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -35,7 +28,9 @@ use ikigai_core::{
     Fallback, Invocation, Iri, Kernel, ReprType, Representation, Request, Space, UriTemplate, Verb,
 };
 use ikigai_nl::{Grounding, SpaceConfig};
-use ikigai_script::authority::{self, Act};
+use ikigai_script::authority::{same_for_all, Ceiling};
+use ikigai_script::sparql::SparqlDoor;
+use ikigai_script::{Backend, MemoryBackend};
 use ikigai_store::{space as store_space, DurableStore};
 
 pub const LEDGER: &str = "urn:example:ledger";
@@ -61,7 +56,7 @@ pub fn seed() -> String {
     )
 }
 
-/// A script the stand-in holds.
+/// A script every test host holds, published by root.
 #[derive(Clone)]
 pub struct Script {
     pub name: &'static str,
@@ -92,74 +87,7 @@ pub const SCRIPTS: [Script; 3] = [
     },
 ];
 
-fn version(script: &Script) -> String {
-    ikigai_nl::model::sha256(script.source.as_bytes())
-}
-
-/// The script host's read rule, asked of the host's own code (`authority::holds` and
-/// `authority::excluded`), so the stand-in cannot drift from it: the script's grant or a
-/// namespace grant covering it, or, for a public published script, `…:read:public`; and no
-/// exclusion naming it either way.
-fn may_read(cap: &Capability, script: &Script) -> bool {
-    authority::holds(cap, Act::Read, script.name)
-        || (script.public
-            && script.state == "published"
-            && cap.allows("urn:cap:script:read:public")
-            && !authority::excluded(cap, Act::Read, script.name))
-}
-
-fn json(value: serde_json::Value) -> Representation {
-    Representation::new(
-        ReprType::new("application/json"),
-        serde_json::to_vec_pretty(&value).unwrap(),
-    )
-}
-
-struct StandInCatalog;
-
-#[async_trait]
-impl Endpoint for StandInCatalog {
-    async fn invoke(&self, inv: &Invocation<'_>) -> ikigai_core::Result<Representation> {
-        let scripts: Vec<_> = SCRIPTS
-            .iter()
-            .filter(|s| may_read(inv.capability, s))
-            .map(|s| {
-                serde_json::json!({
-                    "name": s.name,
-                    "iri": format!("urn:script:{}", s.name),
-                    "state": s.state,
-                    "public": s.public,
-                    "version": version(s),
-                    "lastRun": null,
-                    "error": null,
-                })
-            })
-            .collect();
-        // LIVE, as ikigai-script's is: no `.cacheable()`.
-        Ok(json(serde_json::json!({ "schema": 1, "scripts": scripts })))
-    }
-
-    fn name(&self) -> &str {
-        "script-catalog"
-    }
-
-    fn describe(&self) -> Description {
-        Description::new("script-catalog").verb(Verb::Meta).action(
-            ActionSpec::new(Verb::Source)
-                .summary("The catalog.")
-                .input(
-                    ArgSpec::new("as")
-                        .class("http://www.w3.org/2001/XMLSchema#string")
-                        .one_of(["application/json"])
-                        .optional(),
-                )
-                .output("application/json")
-                .requires("urn:cap:script:read:*"),
-        )
-    }
-}
-
-/// A script the stand-in was sent with a Sink.
+/// A script as the script host keeps it, read from its backend.
 #[derive(Clone, Debug)]
 pub struct SavedScript {
     pub version: String,
@@ -169,11 +97,20 @@ pub struct SavedScript {
     pub source: String,
 }
 
-/// What the stand-in's Sink has kept, by name.
-pub type Saved = Arc<Mutex<BTreeMap<String, SavedScript>>>;
+/// `ikigai-script`'s space over `backend`: the store's SPARQL doors, no ceiling (the
+/// derived authority and the publisher's grant are what a test is about).
+pub fn scripts(backend: Arc<MemoryBackend>) -> ikigai_script::ScriptSpace {
+    ikigai_script::space(
+        ikigai_script::SpaceConfig::new(backend, same_for_all(Ceiling::unbounded()))
+            .sparql(SparqlDoor::store()),
+    )
+}
 
-struct StandInScript {
-    saved: Saved,
+fn json(value: serde_json::Value) -> Representation {
+    Representation::new(
+        ReprType::new("application/json"),
+        serde_json::to_vec_pretty(&value).unwrap(),
+    )
 }
 
 fn arg<'a>(inv: &'a Invocation<'_>, name: &str) -> Option<&'a str> {
@@ -181,206 +118,6 @@ fn arg<'a>(inv: &'a Invocation<'_>, name: &str) -> Option<&'a str> {
         Some(ArgRef::Inline(bytes)) => std::str::from_utf8(bytes).ok(),
         _ => None,
     }
-}
-
-/// The real Sink's rules, in the real order: the write grant, the language, the DERIVED
-/// authority (refused as `InvalidArgument` when the text does not analyze), no elevation
-/// (refused as `Denied`), then `if-version` (refused as `Conflict`).
-fn sink(inv: &Invocation<'_>, saved: &Saved, name: &str) -> ikigai_core::Result<Representation> {
-    let write = format!("urn:cap:script:write:{name}");
-    if !inv.capability.allows(&write) {
-        return Err(Error::Denied(format!(
-            "publishing a script needs `{write}`, which this capability does not hold"
-        )));
-    }
-    let source = arg(inv, "content").ok_or_else(|| Error::MissingArgument("content".into()))?;
-    let language = arg(inv, "language").unwrap_or("lisp");
-    let requires: Vec<String> = match language {
-        "sparql" => ikigai_nl::script_sparql::analyze(
-            source,
-            &ikigai_nl::script_sparql::SparqlDoor::store(),
-        )?
-        .requires()
-        .into_iter()
-        .collect(),
-        _ => vec!["urn:cap:lisp".to_string()],
-    };
-    let missing: Vec<&String> = requires
-        .iter()
-        .filter(|scope| !held(inv.capability, scope))
-        .collect();
-    if !missing.is_empty() {
-        return Err(Error::Denied(format!(
-            "a script cannot be given more than its publisher holds, and this capability does \
-             not hold {missing:?}"
-        )));
-    }
-    let state = arg(inv, "state").unwrap_or("published").to_string();
-    let mut saved = saved.lock().unwrap();
-    let at = saved
-        .get(name)
-        .map(|s| s.version.clone())
-        .or_else(|| SCRIPTS.iter().find(|s| s.name == name).map(version))
-        .unwrap_or_else(|| "none".to_string());
-    if let Some(expected) = arg(inv, "if-version") {
-        if expected != at {
-            return Err(Error::Conflict(format!(
-                "urn:script:{name} is at {at}, not {expected}"
-            )));
-        }
-    }
-    let v = ikigai_nl::model::sha256(source.as_bytes());
-    saved.insert(
-        name.to_string(),
-        SavedScript {
-            version: v.clone(),
-            state,
-            language: language.to_string(),
-            requires,
-            source: source.to_string(),
-        },
-    );
-    Ok(Representation::new(
-        ReprType::new("text/plain"),
-        format!("urn:script:{name}:version:{v}\n").into_bytes(),
-    ))
-}
-
-/// "Holds", reading a trailing `*` as "some grant under this prefix", as the script host
-/// does for a derived family.
-fn held(cap: &Capability, scope: &str) -> bool {
-    match scope.strip_suffix('*') {
-        Some(prefix) => {
-            cap.is_root()
-                || cap
-                    .scopes()
-                    .is_some_and(|held| held.iter().any(|s| s.starts_with(prefix)))
-        }
-        None => cap.allows(scope),
-    }
-}
-
-#[async_trait]
-impl Endpoint for StandInScript {
-    async fn invoke(&self, inv: &Invocation<'_>) -> ikigai_core::Result<Representation> {
-        let name = inv.bindings.get("name").unwrap_or_default();
-        if inv.request.verb == Verb::Sink {
-            return sink(inv, &self.saved, name);
-        }
-        let kept = self.saved.lock().unwrap().get(name).cloned();
-        if let Some(kept) = kept {
-            if !authority::holds(inv.capability, Act::Read, name) {
-                return Err(Error::Denied(format!(
-                    "this capability holds none of urn:cap:script:read:{name}"
-                )));
-            }
-            return Ok(json(serde_json::json!({
-                "iri": format!("urn:script:{name}"),
-                "schema": 1,
-                "name": name,
-                "version": kept.version,
-                "state": kept.state,
-                "public": false,
-                "language": kept.language,
-                "requires": kept.requires,
-                "source": kept.source,
-            })));
-        }
-        let script = SCRIPTS.iter().find(|s| s.name == name);
-        match script {
-            Some(s) if may_read(inv.capability, s) => {
-                let v = version(s);
-                Ok(json(serde_json::json!({
-                    "iri": format!("urn:script:{}", s.name),
-                    "schema": 1,
-                    "name": s.name,
-                    "version": v,
-                    "state": s.state,
-                    "public": s.public,
-                    "granted": ["urn:cap:lisp"],
-                    "exclusions": [],
-                    "publisher": "urn:script:principal:unstamped",
-                    "updated": null,
-                    "history": [],
-                    "versionIri": format!("urn:script:{}:version:{v}", s.name),
-                    "language": "lisp",
-                    "requires": ["urn:cap:lisp"],
-                    "source": s.source,
-                }))
-                .cacheable())
-            }
-            Some(_) => Err(Error::Denied(format!(
-                "this capability holds none of urn:cap:script:read:{name} — nor, for a \
-                 public script, urn:cap:script:read:public"
-            ))),
-            None => Err(Error::NotFound(format!("urn:script:{name}"))),
-        }
-    }
-
-    fn name(&self) -> &str {
-        "script"
-    }
-
-    fn describe(&self) -> Description {
-        Description::new("script")
-            .verb(Verb::Meta)
-            .action(
-                ActionSpec::new(Verb::Source)
-                    .summary("The script, without running it.")
-                    .input(
-                        ArgSpec::new("name")
-                            .class("http://www.w3.org/2001/XMLSchema#string")
-                            .binding(),
-                    )
-                    .input(
-                        ArgSpec::new("as")
-                            .class("http://www.w3.org/2001/XMLSchema#string")
-                            .one_of(["application/json"])
-                            .optional(),
-                    )
-                    .output("application/json")
-                    .requires("urn:cap:script:read:*"),
-            )
-            .action(
-                ActionSpec::new(Verb::Sink)
-                    .summary("Publish or replace the script, or save a draft.")
-                    .input(
-                        ArgSpec::new("name")
-                            .class("http://www.w3.org/2001/XMLSchema#string")
-                            .binding(),
-                    )
-                    .input(ArgSpec::new("content").class("http://www.w3.org/2001/XMLSchema#string"))
-                    .input(
-                        ArgSpec::new("language")
-                            .class("http://www.w3.org/2001/XMLSchema#string")
-                            .one_of(["lisp", "sparql"])
-                            .optional(),
-                    )
-                    .input(
-                        ArgSpec::new("state")
-                            .class("http://www.w3.org/2001/XMLSchema#string")
-                            .one_of(["published", "draft"])
-                            .optional(),
-                    )
-                    .input(
-                        ArgSpec::new("if-version")
-                            .class("http://www.w3.org/2001/XMLSchema#string")
-                            .optional(),
-                    )
-                    .output("text/plain")
-                    .requires("urn:cap:script:write:*"),
-            )
-    }
-}
-
-/// The stand-in for `ikigai-script`'s read doors and its script Sink.
-pub fn scripts(saved: Saved) -> EndpointSpace {
-    EndpointSpace::new()
-        .bind(Exact::new("urn:script:catalog"), StandInCatalog)
-        .bind(
-            UriTemplate::parse("urn:script:{name}").unwrap(),
-            StandInScript { saved },
-        )
 }
 
 // ------------------------------------------------------------------------- the stub model
@@ -541,7 +278,8 @@ fn llm(stub: Arc<Mutex<Stub>>) -> EndpointSpace {
 pub struct Host {
     pub kernel: Kernel,
     pub stub: Arc<Mutex<Stub>>,
-    pub saved: Saved,
+    /// The script host's backend, read directly to see what a Sink kept.
+    pub backend: Arc<MemoryBackend>,
 }
 
 impl Host {
@@ -550,9 +288,30 @@ impl Host {
         self.stub.lock().unwrap().calls.clone()
     }
 
-    /// What the script stand-in kept under `name`.
+    /// What the script host keeps under `name`, other than the scripts every host holds.
     pub fn saved(&self, name: &str) -> Option<SavedScript> {
-        self.saved.lock().unwrap().get(name).cloned()
+        if SCRIPTS.iter().any(|s| s.name == name) {
+            return None;
+        }
+        let head = self.backend.head(name).unwrap()?;
+        let version = self.backend.version(name, &head.version).unwrap()?;
+        Some(SavedScript {
+            version: head.version,
+            state: head.state.as_str().to_string(),
+            language: version.language.as_str().to_string(),
+            requires: version.requires.into_iter().collect(),
+            source: version.source,
+        })
+    }
+
+    /// The names of every script saved here beyond the ones every host holds.
+    pub fn saved_names(&self) -> Vec<String> {
+        self.backend
+            .names()
+            .unwrap()
+            .into_iter()
+            .filter(|n| !SCRIPTS.iter().any(|s| s.name == n))
+            .collect()
     }
 }
 
@@ -565,28 +324,28 @@ pub fn drafting_host(config: SpaceConfig, drafts: &[(&str, &[&str])]) -> Host {
             .collect(),
         calls: Vec::new(),
     }));
-    let saved: Saved = Arc::new(Mutex::new(BTreeMap::new()));
-    let kernel = kernel(config, stub.clone(), saved.clone());
+    let backend = Arc::new(MemoryBackend::new());
+    let kernel = kernel(config, stub.clone(), backend.clone());
     Host {
         kernel,
         stub,
-        saved,
+        backend,
     }
 }
 
-/// A kernel over `nl` beside the store (seeded), the vocabulary, the script stand-in and
-/// the stub model.
+/// A kernel over `nl` beside the store (seeded), the vocabulary, the script host (holding
+/// [`SCRIPTS`]) and the stub model.
 pub fn host(config: SpaceConfig) -> Kernel {
     drafting_host(config, &[]).kernel
 }
 
-fn kernel(config: SpaceConfig, stub: Arc<Mutex<Stub>>, saved: Saved) -> Kernel {
+fn kernel(config: SpaceConfig, stub: Arc<Mutex<Stub>>, backend: Arc<MemoryBackend>) -> Kernel {
     let store = DurableStore::in_memory().expect("an in-memory store");
     let root = Fallback::new(vec![
         Arc::new(ikigai_nl::space(config)) as Arc<dyn Space>,
         Arc::new(store_space(store)) as Arc<dyn Space>,
         Arc::new(ikigai_vocab::space()) as Arc<dyn Space>,
-        Arc::new(scripts(saved)) as Arc<dyn Space>,
+        Arc::new(scripts(backend)) as Arc<dyn Space>,
         Arc::new(llm(stub)) as Arc<dyn Space>,
     ]);
     let kernel = Kernel::with_meta_renderer(Arc::new(root), Arc::new(ikigai_vocab::TurtleRenderer));
@@ -598,6 +357,21 @@ fn kernel(config: SpaceConfig, stub: Arc<Mutex<Stub>>, saved: Saved) -> Kernel {
         &Capability::root(),
     )
     .expect("seeding the store");
+    for script in &SCRIPTS {
+        let public = script.public.to_string();
+        issue(
+            &kernel,
+            Verb::Sink,
+            &format!("urn:script:{}", script.name),
+            &[
+                ("content", script.source),
+                ("state", script.state),
+                ("public", &public),
+            ],
+            &Capability::root(),
+        )
+        .unwrap_or_else(|e| panic!("publishing {}: {e}", script.name));
+    }
     kernel
 }
 

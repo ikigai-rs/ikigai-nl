@@ -14,7 +14,8 @@ use ikigai_nl::{Draft, Escalation, Llm, SpaceConfig, Status};
 
 const TITLE: &str = "http://purl.org/dc/terms/title";
 
-/// Alice: LEDGER, public scripts, and her own draft names.
+/// Alice: LEDGER, public scripts, and her own draft names, with her principal minted in as
+/// a host's door mints it (the script host shows a draft to its author alone).
 fn writer(names: &[&str]) -> Capability {
     let mut scopes = vec![
         format!("urn:cap:store:read:graph:{LEDGER}"),
@@ -25,6 +26,8 @@ fn writer(names: &[&str]) -> Capability {
         scopes.push(format!("urn:cap:script:read:{n}"));
     }
     Capability::scoped(scopes)
+        .with_principal("urn:test:person:alice")
+        .expect("a principal a door can mint")
 }
 
 fn draft(h: &Host, cap: &Capability, args: &[(&str, &str)]) -> Draft {
@@ -369,11 +372,9 @@ fn the_saved_draft_carries_its_provenance() {
 
     // ★ The ask stayed a literal inside a comment: the saved text analyzes to exactly the
     // query the model wrote, with the authority that query derives and nothing more.
-    let analysis = ikigai_nl::script_sparql::analyze(
-        &saved.source,
-        &ikigai_nl::script_sparql::SparqlDoor::store(),
-    )
-    .unwrap();
+    let analysis =
+        ikigai_script::sparql::analyze(&saved.source, &ikigai_script::sparql::SparqlDoor::store())
+            .unwrap();
     assert_eq!(
         analysis.graphs.into_iter().collect::<Vec<_>>(),
         vec![LEDGER.to_string()]
@@ -430,7 +431,7 @@ fn an_anonymous_caller_is_grounded_anonymously_and_drafts_only_against_public_gr
         preview.rows,
         vec![vec!["<urn:example:book:1>", "\"Bounded\""]]
     );
-    assert!(h.saved.lock().unwrap().is_empty());
+    assert!(h.saved_names().is_empty());
 }
 
 #[test]
@@ -457,7 +458,7 @@ fn a_parameter_is_declared_and_its_default_bound_in_the_preview() {
     );
     // The declaration survives the provenance block above it.
     let saved = h.saved("by-title").unwrap();
-    let params = ikigai_nl::script_sparql::parameters(&saved.source).unwrap();
+    let params = ikigai_script::sparql::parameters(&saved.source).unwrap();
     assert_eq!(params.len(), 1);
 }
 
@@ -696,4 +697,32 @@ fn a_host_may_send_no_token_bound() {
     );
     assert_eq!(d.status, Status::Saved, "{d:#?}");
     assert_eq!(h.prompts()[0].max_tokens, None);
+}
+
+#[test]
+fn the_check_refuses_a_parameter_name_the_script_host_reserves() {
+    // Ledger #1244: the copy of the host's analysis reserved 3 names where the host reserves
+    // 7, so a draft declaring a transport-stamped name passed the check and was refused at
+    // save. One contract now: what the check passes, the save accepts.
+    let h = drafting_host(SpaceConfig::new(), &[]);
+    let query = format!(
+        "# @param principal xsd:string default someone\n\
+         SELECT ?item WHERE {{ GRAPH <{LEDGER}> {{ ?item <{TITLE}> ?principal }} }}"
+    );
+    let rep = issue(
+        &h.kernel,
+        Verb::Source,
+        "urn:nl:sparql:check",
+        &[("content", &query), ("as", "application/json")],
+        &writer(&[]),
+    )
+    .unwrap();
+    let c: ikigai_nl::Check = serde_json::from_slice(&rep.bytes).unwrap();
+    assert!(!c.valid, "{c:#?}");
+    assert!(
+        c.errors.iter().any(|e| e.contains("principal")),
+        "{:?}",
+        c.errors
+    );
+    assert!(ikigai_script::sparql::RESERVED_PARAMETERS.contains(&"principal"));
 }
