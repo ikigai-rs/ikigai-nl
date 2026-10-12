@@ -9,9 +9,9 @@ use ikigai_core::{
 };
 use serde::Serialize;
 
-use crate::config::SpaceConfig;
-use crate::gather::{self, Manifold, ACTIONS_IRI, GRAPHS_IRI, VOCAB_IRI};
-use crate::model::{digest, Grounding, Part, SCHEMA};
+use crate::config::{Examples, SpaceConfig};
+use crate::gather::{self, Manifold, ACTIONS_IRI, CATALOG_IRI, GRAPHS_IRI, VOCAB_IRI};
+use crate::model::{digest, Example, Grounding, Part, SCHEMA};
 use crate::{focus, render};
 
 const TURTLE: &str = "text/turtle";
@@ -40,12 +40,85 @@ fn optional<'a>(inv: &'a Invocation<'_>, name: &str) -> Result<Option<&'a str>> 
     }
 }
 
+/// The four parts, in the order a grounding states them.
+pub(crate) const PARTS: [&str; 4] = ["actions", "vocabulary", "graphs", "examples"];
+
+/// Which parts `parts=` asks for: a list of part names separated by spaces or commas, or
+/// every part when it is absent. An unknown name is refused, never ignored: a part
+/// silently dropped would read as a part with nothing in it.
+fn wanted_parts(inv: &Invocation<'_>) -> Result<[bool; 4]> {
+    let Some(text) = optional(inv, "parts")? else {
+        return Ok([true; 4]);
+    };
+    let mut wanted = [false; 4];
+    for name in text
+        .split(|c: char| c == ',' || c.is_whitespace())
+        .filter(|n| !n.is_empty())
+    {
+        match PARTS.iter().position(|p| *p == name) {
+            Some(i) => wanted[i] = true,
+            None => {
+                return Err(Error::InvalidArgument {
+                    name: "parts".to_string(),
+                    detail: format!("`{name}` is not a part; the parts are {}", PARTS.join(", ")),
+                })
+            }
+        }
+    }
+    Ok(wanted)
+}
+
+/// A part `parts=` did not ask for: empty, and saying so. Nothing is read for it.
+fn left_out<T: Serialize>(source: Option<&str>, of: usize) -> Part<T> {
+    Part::new(
+        source.map(str::to_string),
+        None,
+        of,
+        Some(format!(
+            "left out: parts= did not ask for it ({of} offered)"
+        )),
+        Vec::new(),
+    )
+}
+
 /// The digest a grounding is named by: its focus and its parts' identities.
 #[derive(Serialize)]
 struct Identity<'a> {
     schema: u32,
     focus: Option<&'a str>,
     parts: [&'a str; 4],
+}
+
+impl GroundingEndpoint {
+    /// The examples part.
+    async fn examples(
+        &self,
+        inv: &Invocation<'_>,
+        manifold: &Manifold,
+        focus: Option<&str>,
+    ) -> Result<Part<Example>> {
+        let config = &self.config;
+        let gathered = gather::examples(inv, manifold, config).await?;
+        let fetched = gathered.items.len();
+        let kept: Vec<_> = match focus {
+            Some(f) => gathered
+                .items
+                .into_iter()
+                .filter(|e| focus::example(f, e))
+                .collect(),
+            None => gathered.items,
+        };
+        let note = match gathered.note {
+            Some(note) => Some(note),
+            None if fetched < gathered.of => Some(format!(
+                "the first {fetched} of {} published scripts were read (the bound is {})",
+                gathered.of, config.max_examples
+            )),
+            None => (kept.len() < gathered.of)
+                .then(|| narrowed(kept.len(), gathered.of, "scripts", focus)),
+        };
+        Ok(Part::new(gathered.source, None, gathered.of, note, kept))
+    }
 }
 
 #[async_trait]
@@ -68,104 +141,107 @@ impl Endpoint for GroundingEndpoint {
             }
         };
         let focus = optional(inv, "focus")?;
+        let [want_actions, want_vocabulary, want_graphs, want_examples] = wanted_parts(inv)?;
         let config = &self.config;
         let manifold = Manifold::read(inv).await?;
 
-        // The actions.
-        let offered = gather::actions(inv, &manifold).await?;
-        let of = offered.len();
-        let kept: Vec<_> = match focus {
-            Some(f) => offered
-                .into_iter()
-                .filter(|a| focus::action(f, a))
-                .collect(),
-            None => offered,
+        // The actions: each offered endpoint's description, one Meta read apiece, which on
+        // a host with many doors is most of the grounding. Left out, they are counted from
+        // the manifold alone.
+        let actions = if want_actions {
+            let offered = gather::actions(inv, &manifold).await?;
+            let of = offered.len();
+            let kept: Vec<_> = match focus {
+                Some(f) => offered
+                    .into_iter()
+                    .filter(|a| focus::action(f, a))
+                    .collect(),
+                None => offered,
+            };
+            let note = (kept.len() < of).then(|| narrowed(kept.len(), of, "actions", focus));
+            Part::new(Some(ACTIONS_IRI.to_string()), None, of, note, kept)
+        } else {
+            left_out(Some(ACTIONS_IRI), manifold.actions())
         };
-        let note = (kept.len() < of).then(|| narrowed(kept.len(), of, "actions", focus));
-        let actions = Part::new(Some(ACTIONS_IRI.to_string()), None, of, note, kept);
 
         // The graphs (before the vocabulary: a focused vocabulary keeps the terms the
         // kept graphs use).
-        let graphs = match gather::graphs(inv, &manifold, config, focus).await? {
-            None => Part::new(
-                Some(GRAPHS_IRI.to_string()),
-                None,
-                0,
-                Some(format!(
-                    "{GRAPHS_IRI} is not offered to this capability, or not bound: no graph \
-                     is readable"
-                )),
-                Vec::new(),
-            ),
-            Some((of, shapes)) => {
-                let summarized = shapes.len();
-                let kept: Vec<_> = match focus {
-                    Some(f) => shapes.into_iter().filter(|s| focus::graph(f, s)).collect(),
-                    None => shapes,
-                };
-                let note = if summarized < of {
+        let graphs = if !want_graphs {
+            left_out(Some(GRAPHS_IRI), 0)
+        } else {
+            match gather::graphs(inv, &manifold, config, focus).await? {
+                None => Part::new(
+                    Some(GRAPHS_IRI.to_string()),
+                    None,
+                    0,
                     Some(format!(
-                        "the first {summarized} of {of} readable graphs were summarized (the \
+                        "{GRAPHS_IRI} is not offered to this capability, or not bound: no graph \
+                     is readable"
+                    )),
+                    Vec::new(),
+                ),
+                Some((of, shapes)) => {
+                    let summarized = shapes.len();
+                    let kept: Vec<_> = match focus {
+                        Some(f) => shapes.into_iter().filter(|s| focus::graph(f, s)).collect(),
+                        None => shapes,
+                    };
+                    let note = if summarized < of {
+                        Some(format!(
+                            "the first {summarized} of {of} readable graphs were summarized (the \
                          bound is {}){}",
-                        config.max_graphs,
-                        if focus.is_some() {
-                            format!(", {} of them mention the focus", kept.len())
-                        } else {
-                            "; name one with focus=".to_string()
-                        }
-                    ))
-                } else {
-                    (kept.len() < of).then(|| narrowed(kept.len(), of, "graphs", focus))
-                };
-                Part::new(Some(GRAPHS_IRI.to_string()), None, of, note, kept)
+                            config.max_graphs,
+                            if focus.is_some() {
+                                format!(", {} of them mention the focus", kept.len())
+                            } else {
+                                "; name one with focus=".to_string()
+                            }
+                        ))
+                    } else {
+                        (kept.len() < of).then(|| narrowed(kept.len(), of, "graphs", focus))
+                    };
+                    Part::new(Some(GRAPHS_IRI.to_string()), None, of, note, kept)
+                }
             }
         };
 
         // The vocabulary.
-        let vocabulary = match gather::vocabulary(inv).await? {
-            None => Part::new(
-                Some(VOCAB_IRI.to_string()),
-                None,
-                0,
-                Some(format!("{VOCAB_IRI} is not bound")),
-                Vec::new(),
-            ),
-            Some((version, terms)) => {
-                let of = terms.len();
-                let used = focus::used(&graphs.items);
-                let kept: Vec<_> = match focus {
-                    Some(f) => terms
-                        .into_iter()
-                        .filter(|t| focus::term(f, t, &used))
-                        .collect(),
-                    None => terms,
-                };
-                let note = (kept.len() < of).then(|| narrowed(kept.len(), of, "terms", focus));
-                Part::new(Some(VOCAB_IRI.to_string()), version, of, note, kept)
+        let vocabulary = if !want_vocabulary {
+            left_out(Some(VOCAB_IRI), 0)
+        } else {
+            match gather::vocabulary(inv).await? {
+                None => Part::new(
+                    Some(VOCAB_IRI.to_string()),
+                    None,
+                    0,
+                    Some(format!("{VOCAB_IRI} is not bound")),
+                    Vec::new(),
+                ),
+                Some((version, terms)) => {
+                    let of = terms.len();
+                    let used = focus::used(&graphs.items);
+                    let kept: Vec<_> = match focus {
+                        Some(f) => terms
+                            .into_iter()
+                            .filter(|t| focus::term(f, t, &used))
+                            .collect(),
+                        None => terms,
+                    };
+                    let note = (kept.len() < of).then(|| narrowed(kept.len(), of, "terms", focus));
+                    Part::new(Some(VOCAB_IRI.to_string()), version, of, note, kept)
+                }
             }
         };
 
         // The worked examples.
-        let gathered = gather::examples(inv, &manifold, config).await?;
-        let fetched = gathered.items.len();
-        let kept: Vec<_> = match focus {
-            Some(f) => gathered
-                .items
-                .into_iter()
-                .filter(|e| focus::example(f, e))
-                .collect(),
-            None => gathered.items,
+        let examples = if want_examples {
+            self.examples(inv, &manifold, focus).await?
+        } else {
+            left_out(
+                matches!(config.examples, Examples::Catalog).then_some(CATALOG_IRI),
+                0,
+            )
         };
-        let note = match gathered.note {
-            Some(note) => Some(note),
-            None if fetched < gathered.of => Some(format!(
-                "the first {fetched} of {} published scripts were read (the bound is {})",
-                gathered.of, config.max_examples
-            )),
-            None => (kept.len() < gathered.of)
-                .then(|| narrowed(kept.len(), gathered.of, "scripts", focus)),
-        };
-        let examples = Part::new(gathered.source, None, gathered.of, note, kept);
 
         let identity = digest(&Identity {
             schema: SCHEMA,
@@ -236,7 +312,8 @@ impl Endpoint for GroundingEndpoint {
                 "What a drafter may know, as data, under the CALLER's capability: the actions \
                  it may take (the manifold, with each action's arguments), the ik: \
                  vocabulary, the shape of each named graph it may read (VoID-like totals, \
-                 the classes and predicates used, a few sample triples), and published \
+                 the classes and predicates used, the kind of value each predicate takes \
+                 and a small closed set's values, a few sample triples), and published \
                  scripts it may read as worked examples. A graph or script the caller cannot \
                  read contributes nothing, not even its name. Each part names the resource it \
                  came from and a sha256 identity, and the grounding is named by the sha256 of \
@@ -259,6 +336,19 @@ impl Endpoint for GroundingEndpoint {
                                  also when a kept graph uses it.",
                             )
                             .class(XSD_STRING)
+                            .optional(),
+                    )
+                    .input(
+                        ArgSpec::new("parts")
+                            .summary(
+                                "Which parts to read, separated by spaces or commas: \
+                                 `actions`, `vocabulary`, `graphs`, `examples`. Every part \
+                                 when absent. A part left out is stated empty with a note, \
+                                 and nothing is read for it; the SPARQL drafter reads \
+                                 `vocabulary graphs examples`.",
+                            )
+                            .class(XSD_STRING)
+                            .default_value("actions vocabulary graphs examples")
                             .optional(),
                     )
                     .input(

@@ -8,6 +8,9 @@ Rules:
   GRAPH <graph-iri> { ... }, or name the dataset with FROM <graph-iri>.
 - Use only the classes and predicates listed for those graphs, or the vocabulary terms listed
   below. Never invent an IRI.
+- Match the kind of value each predicate takes, as listed: where it takes an IRI, write the
+  IRI (one of the values listed, when they are), never a string such as "open"; where it takes
+  a literal, write a literal of the datatype listed.
 - When the ask implies a value a person would change (a number of days, a date, a name, a
   limit), declare it as a parameter in the comment block BEFORE the query's first token, one
   line each, and use it in the query as ?name:

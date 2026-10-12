@@ -2,8 +2,10 @@ Your previous draft was:
 ```sparql
 {{previous}}
 ```
-The checker refused it:
+The checker found:
 {{errors}}
 
-Draft the query again, fixing every problem above and keeping to the rules. Answer with the
-query alone, in one ```sparql fenced block.
+Draft the query again, fixing every problem above and keeping to the rules. A query whose
+preview is empty matches nothing: fix the patterns named as matching nothing on their own
+(compare each with the kind of value its predicate takes), or the join or FILTER that
+excludes every row. Answer with the query alone, in one ```sparql fenced block.

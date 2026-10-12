@@ -204,13 +204,53 @@ pub struct GraphShape {
     pub error: Option<String>,
 }
 
-/// A class or predicate with how often it occurs.
+/// A class or predicate with how often it occurs, and, for a predicate, what kind of value
+/// it takes.
+///
+/// ```
+/// let p: ikigai_nl::Partition = serde_json::from_str(r#"{
+///   "iri": "https://ikigai-rs.dev/ns/ledger#status", "count": 395,
+///   "kinds": [{ "kind": "iri", "count": 395, "distinct": 3 }],
+///   "values": ["<https://ikigai-rs.dev/ns/ledger#open>",
+///              "<https://ikigai-rs.dev/ns/ledger#closed>",
+///              "<https://ikigai-rs.dev/ns/ledger#blocked>"]
+/// }"#).unwrap();
+/// assert_eq!(p.kinds[0].kind, "iri");
+/// assert!(p.kinds[0].datatype.is_none());
+/// // A class partition, or a grounding from before value kinds, states neither.
+/// let c: ikigai_nl::Partition = serde_json::from_str(r#"{ "iri": "urn:c", "count": 2 }"#).unwrap();
+/// assert!(c.kinds.is_empty() && c.values.is_empty());
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Partition {
     /// The class or predicate IRI.
     pub iri: String,
     /// Instances of the class, or triples with the predicate.
     pub count: u64,
+    /// A predicate's value kinds, most triples first: whether its objects are IRIs,
+    /// blank nodes or literals, and each literal datatype. Empty for a class.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub kinds: Vec<ValueKind>,
+    /// A predicate's values, as N-Triples terms, most used first, when they are a small
+    /// closed set: at most [`SpaceConfig::max_values`](crate::SpaceConfig::max_values)
+    /// distinct values, each used twice on average (`ledger:status` is `ledger:open`,
+    /// `ledger:closed`, …; a title never is). Empty otherwise, and for a class.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub values: Vec<String>,
+}
+
+/// One kind of value a predicate takes in one graph.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ValueKind {
+    /// `iri`, `blank` or `literal`.
+    pub kind: String,
+    /// A literal's datatype IRI (`rdf:langString` for a language-tagged string).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub datatype: Option<String>,
+    /// Triples whose object is of this kind.
+    pub count: u64,
+    /// Distinct objects of this kind.
+    pub distinct: u64,
 }
 
 /// A published script the caller may read, as a worked example.
