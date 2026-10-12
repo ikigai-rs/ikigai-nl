@@ -24,7 +24,7 @@ use oxrdf::{NamedOrBlankNode, Term as RdfTerm};
 use serde::Deserialize;
 
 use crate::config::{Examples, SpaceConfig};
-use crate::model::{Action, Example, GraphShape, Input, Partition, Term};
+use crate::model::{Action, Example, GraphShape, Input, Partition, Term, ValueKind};
 
 /// The capability-scoped action manifold.
 pub const ACTIONS_IRI: &str = "urn:kernel:actions";
@@ -58,6 +58,12 @@ const CLASS_TOTAL: &str = include_str!("queries/class-total.rq");
 const CLASSES: &str = include_str!("queries/classes.rq");
 const PROPERTIES: &str = include_str!("queries/properties.rq");
 const SAMPLES: &str = include_str!("queries/samples.rq");
+const KINDS: &str = include_str!("queries/kinds.rq");
+const VALUES: &str = include_str!("queries/values.rq");
+
+/// The most value-kind rows read per graph, per listed predicate: a predicate's objects
+/// are rarely of more than a few kinds (IRIs, and a datatype or two).
+const KINDS_PER_PREDICATE: usize = 4;
 
 const RDF_TYPE: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#type";
 const RDF_PROPERTY: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#Property";
@@ -122,6 +128,11 @@ impl Manifold {
             }
         }
         Ok(manifold)
+    }
+
+    /// How many actions it offers: one per verb on each pattern.
+    pub(crate) fn actions(&self) -> usize {
+        self.offered.values().map(BTreeSet::len).sum()
     }
 
     /// Whether the manifold offers `verb` on exactly this pattern.
@@ -397,33 +408,36 @@ async fn fill(
     let bindings = serde_json::json!({ "g": { "type": "uri", "value": graph } }).to_string();
     let partitions = config.max_partitions.to_string();
     let samples = config.samples.to_string();
+    let kinds_limit = (config.max_partitions * KINDS_PER_PREDICATE).to_string();
     let queries = [
         TOTALS.to_string(),
         CLASS_TOTAL.to_string(),
         CLASSES.replace("{limit}", &partitions),
         PROPERTIES.replace("{limit}", &partitions),
         SAMPLES.replace("{limit}", &samples),
+        KINDS.replace("{limit}", &kinds_limit),
     ];
+    let ask = |query: &str, bindings: &str| {
+        let mut args = vec![
+            ("query", query),
+            ("bindings", bindings),
+            ("as", SPARQL_JSON),
+        ];
+        if scoped {
+            args.push(("graph", graph.as_str()));
+        }
+        request(Verb::Source, door, &args)
+    };
     let requests = queries
         .iter()
-        .map(|query| {
-            let mut args = vec![
-                ("query", query.as_str()),
-                ("bindings", bindings.as_str()),
-                ("as", SPARQL_JSON),
-            ];
-            if scoped {
-                args.push(("graph", graph.as_str()));
-            }
-            request(Verb::Source, door, &args)
-        })
+        .map(|query| ask(query, &bindings))
         .collect::<Result<Vec<_>>>()?;
     let mut results = Vec::new();
     for result in inv.fan_out(requests).await {
         results.push(Rows::parse(&result?)?);
     }
-    let [totals, class_total, classes, properties, samples] = <[Rows; 5]>::try_from(results)
-        .map_err(|_| Error::Endpoint("expected five query results".to_string()))?;
+    let [totals, class_total, classes, properties, samples, kinds] = <[Rows; 6]>::try_from(results)
+        .map_err(|_| Error::Endpoint("expected six query results".to_string()))?;
     if let Some(row) = totals.0.first() {
         shape.triples = row.count("triples");
         shape.subjects = row.count("subjects");
@@ -437,6 +451,8 @@ async fn fill(
         row.iri(var).map(|iri| Partition {
             iri,
             count: row.count("count"),
+            kinds: Vec::new(),
+            values: Vec::new(),
         })
     };
     shape.class_partitions = classes
@@ -449,6 +465,61 @@ async fn fill(
         .iter()
         .filter_map(|r| partition(r, "property"))
         .collect();
+    // Each listed predicate's value kinds, and the values of a small closed set: what a
+    // drafter needs so it writes `ledger:open` rather than guessing `"open"` (ledger #1242).
+    for row in &kinds.0 {
+        let Some(property) = row.iri("property") else {
+            continue;
+        };
+        let Some(p) = shape
+            .property_partitions
+            .iter_mut()
+            .find(|p| p.iri == property)
+        else {
+            continue;
+        };
+        p.kinds.push(ValueKind {
+            kind: row.literal("kind").unwrap_or_default(),
+            datatype: row.iri("datatype"),
+            count: row.count("count"),
+            distinct: row.count("distinct"),
+        });
+    }
+    let closed: Vec<String> = shape
+        .property_partitions
+        .iter()
+        .filter(|p| closed_set(p, config.max_values))
+        .map(|p| p.iri.clone())
+        .collect();
+    if !closed.is_empty() {
+        let limit = config.max_values.to_string();
+        let query = VALUES.replace("{limit}", &limit);
+        let requests = closed
+            .iter()
+            .map(|property| {
+                let bindings = serde_json::json!({
+                    "g": { "type": "uri", "value": graph },
+                    "property": { "type": "uri", "value": property },
+                })
+                .to_string();
+                ask(&query, &bindings)
+            })
+            .collect::<Result<Vec<_>>>()?;
+        for (property, result) in closed.iter().zip(inv.fan_out(requests).await) {
+            let values: Vec<String> = Rows::parse(&result?)?
+                .0
+                .iter()
+                .filter_map(|row| row.ntriples("o"))
+                .collect();
+            if let Some(p) = shape
+                .property_partitions
+                .iter_mut()
+                .find(|p| &p.iri == property)
+            {
+                p.values = values;
+            }
+        }
+    }
     if config.samples > 0 {
         shape.samples = samples
             .0
@@ -464,6 +535,24 @@ async fn fill(
             .collect();
     }
     Ok(())
+}
+
+/// Whether a predicate's values are a small closed set worth listing: every kind of value
+/// it takes is known, none is a blank node, it has at most `max` distinct values, and they
+/// repeat (twice each on average), so a set of titles that happens to be small is not
+/// mistaken for an enumeration. `rdf:type` is left out: its values are the class
+/// partitions already.
+fn closed_set(p: &Partition, max: usize) -> bool {
+    let distinct: u64 = p.kinds.iter().map(|k| k.distinct).sum();
+    let triples: u64 = p.kinds.iter().map(|k| k.count).sum();
+    max > 0
+        && p.iri != RDF_TYPE
+        && !p.kinds.is_empty()
+        && triples == p.count
+        && p.kinds.iter().all(|k| k.kind != "blank")
+        && distinct > 0
+        && distinct <= max as u64
+        && triples >= 2 * distinct
 }
 
 /// A SPARQL JSON result set, as rows of variable → term.
@@ -509,6 +598,13 @@ impl Row {
             .get(var)
             .and_then(|t| t.value.parse().ok())
             .unwrap_or(0)
+    }
+
+    fn literal(&self, var: &str) -> Option<String> {
+        self.0
+            .get(var)
+            .filter(|t| t.kind == "literal" || t.kind == "typed-literal")
+            .map(|t| t.value.clone())
     }
 
     fn iri(&self, var: &str) -> Option<String> {

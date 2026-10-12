@@ -186,8 +186,8 @@ fn a_draft_with_an_unknown_predicate_is_repaired() {
     // What the repair was told: its previous draft and exactly what was refused.
     let calls = h.prompts();
     assert_eq!(calls.len(), 2);
-    assert!(!calls[0].prompt.contains("The checker refused it"));
-    assert!(calls[1].prompt.contains("The checker refused it"));
+    assert!(!calls[0].prompt.contains("The checker found:"));
+    assert!(calls[1].prompt.contains("The checker found:"));
     assert!(calls[1].prompt.contains(&good(unknown)));
     assert!(calls[1].prompt.contains(&d.attempts[0].errors[0]));
     // The saved draft is the repaired query.

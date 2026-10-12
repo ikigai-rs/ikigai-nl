@@ -3,7 +3,9 @@
 //!
 //! The funnel, each step a resource call under the CALLER's capability:
 //!
-//! 1. **Ground**: `urn:nl:grounding` (focused by `graph=`), what the caller may read.
+//! 1. **Ground**: `urn:nl:grounding` (focused by `focus=`; `graph=` is its alias for one
+//!    release), what the caller may read: its graphs, the vocabulary and worked examples
+//!    ([`crate::DRAFTING_PARTS`]), never the actions.
 //! 2. **Draft**: `urn:nl:prompt:sparql` filled with the ask and the grounding, sent to the
 //!    host's LLM door ([`crate::Llm`]): its default backend, or `urn:llm:select` under the
 //!    host's `needs` or escalation policy.
@@ -11,12 +13,17 @@
 //!    caller's, every predicate and class against the grounding, a dry run).
 //! 4. **Repair**: a refused draft goes back to the model with `urn:nl:prompt:sparql-repair`
 //!    and what was refused, up to the host's bound ([`crate::SpaceConfig::max_attempts`]).
-//!    A model that answers a draft it already gave is stopped there: it will not converge.
+//!    So does a valid draft whose preview is EMPTY, with the check's evidence: the triple
+//!    patterns that match nothing on their own (ledger #1242). A model that answers a draft
+//!    it already gave is stopped there: it will not converge.
 //! 5. **Save as a draft**: a Sink on `urn:script:{name}` with `language=sparql` and
 //!    `state=draft`, whose text opens with the drafting's provenance as N-Triples comment
 //!    lines ([`prov_of`] reads them back). The script host analyzes it again and refuses
 //!    a draft whose derived authority the caller does not hold, so its refusal is the last
-//!    validation. Never published, never run: a person publishes.
+//!    validation. Never published, never run: a person publishes. A draft whose preview is
+//!    still empty when drafting stops is saved MARKED ([`Draft::empty_preview`], an
+//!    [`crate::EMPTY_PREVIEW`] warning in its provenance, and the plain
+//!    answer's first line), never silently.
 
 use std::sync::Arc;
 
@@ -28,7 +35,7 @@ use ikigai_core::{
 use oxrdf::{Literal, NamedNode, Term, Triple};
 use serde::{Deserialize, Serialize};
 
-use crate::check::{self, count, detail, optional, Check, CHECK_IRI};
+use crate::check::{self, count, detail, optional, Check, CHECK_IRI, EMPTY_PREVIEW};
 use crate::config::SpaceConfig;
 use crate::gather::request;
 use crate::model::{sha256, Grounding};
@@ -123,6 +130,10 @@ pub struct Attempt {
     pub errors: Vec<String>,
     /// What may be wrong with it.
     pub warnings: Vec<String>,
+    /// Valid, and its preview was empty: sent back to the model with the evidence while
+    /// attempts remained, and marked when it is what was kept.
+    #[serde(skip_serializing_if = "std::ops::Not::not", default)]
+    pub empty_preview: bool,
 }
 
 /// What `urn:nl:sparql` answers.
@@ -157,7 +168,12 @@ pub struct Draft {
     pub grounding: String,
     /// Its identity.
     pub grounding_identity: String,
-    /// Why the draft was not saved, or how it failed, in a sentence.
+    /// The draft kept (saved or answered) matched nothing in its preview: no attempt
+    /// within the bound did better. A person reviewing it is told so on the first line.
+    #[serde(skip_serializing_if = "std::ops::Not::not", default)]
+    pub empty_preview: bool,
+    /// Why the draft was not saved, how it failed, or that its preview is empty, in a
+    /// sentence.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub note: Option<String>,
     /// The provenance, as N-Triples.
@@ -343,7 +359,8 @@ struct Drafting<'a> {
     grounding: &'a Grounding,
     prompts: Vec<(&'static str, String)>,
     attempts: &'a [Attempt],
-    script: Option<String>,
+    /// The script saved, and the attempt (1-based) it was saved from.
+    script: Option<(String, usize)>,
 }
 
 /// PROV-O, as N-Triples, serialized by `oxrdf`: no blank node, every node an IRI.
@@ -422,9 +439,13 @@ fn prov(d: &Drafting<'_>) -> String {
         }
         previous = Some(e);
     }
-    if let (Some(script), Some(last)) = (&d.script, &previous) {
+    if let Some((script, from)) = &d.script {
         push(script, &format!("{PROV}wasGeneratedBy"), iri(a));
-        push(script, &format!("{PROV}wasDerivedFrom"), iri(last));
+        push(
+            script,
+            &format!("{PROV}wasDerivedFrom"),
+            iri(&format!("{a}:attempt:{from}")),
+        );
     }
     out
 }
@@ -453,7 +474,107 @@ pub(crate) struct SparqlEndpoint {
     pub(crate) config: Arc<SpaceConfig>,
 }
 
+/// What one save came to.
+enum Saving {
+    /// The script host kept it: the version's IRI.
+    Saved(String),
+    /// A valid draft the script host would not keep for this caller: why, in a sentence.
+    Unsaved(String),
+    /// The script host's own analysis refused it: fed back like any check's error.
+    Refused(String),
+}
+
+/// The drafting's arguments, read once.
+struct Asked<'a> {
+    ask: &'a str,
+    focus: Option<&'a str>,
+    save: Option<&'a str>,
+}
+
+/// The focus, by `focus=` or its alias `graph=` (accepted for one release), and the name
+/// the caller used, so a refusal can name it. Both, disagreeing, is refused: neither is
+/// chosen silently.
+fn focus_of<'a>(inv: &'a Invocation<'_>) -> Result<(Option<&'a str>, &'static str)> {
+    match (optional(inv, "focus")?, optional(inv, "graph")?) {
+        (Some(f), Some(g)) if f != g => Err(Error::InvalidArgument {
+            name: "graph".to_string(),
+            detail: "the focus arrived twice, as `focus=` and as its alias `graph=`, and they \
+                     differ; pass `focus=` alone"
+                .to_string(),
+        }),
+        (Some(f), _) => Ok((Some(f), "focus")),
+        (None, Some(g)) => Ok((Some(g), "graph")),
+        (None, None) => Ok((None, "focus")),
+    }
+}
+
+/// The grounding's size refusal, naming the argument THIS caller used: the grounding only
+/// knows `focus=`, and a caller who wrote `graph=` must not be told about an argument it
+/// never passed.
+fn renamed(error: Error, used: &str) -> Error {
+    match error {
+        Error::InvalidArgument { name, detail } if name == "focus" && used != "focus" => {
+            Error::InvalidArgument {
+                name: used.to_string(),
+                detail: detail.replace("focus=", &format!("{used}=")),
+            }
+        }
+        other => other,
+    }
+}
+
 impl SparqlEndpoint {
+    /// Save attempt `index` (0-based) as a draft, under the caller: (name, saved text, what
+    /// came of it).
+    async fn save(
+        &self,
+        inv: &Invocation<'_>,
+        asked: &Asked<'_>,
+        grounding: &Grounding,
+        prompts: &[(&'static str, String)],
+        attempts: &[Attempt],
+        index: usize,
+    ) -> Result<(String, String, Saving)> {
+        let activity = activity(asked.ask, asked.focus, grounding, prompts, attempts);
+        let name = draft_name(asked.save, &activity);
+        let script = format!("urn:script:{name}");
+        let text = saved_text(
+            &prov(&Drafting {
+                ask: asked.ask,
+                activity: activity.clone(),
+                grounding,
+                prompts: prompts.to_vec(),
+                attempts,
+                script: Some((script.clone(), attempts[index].n)),
+            }),
+            &attempts[index].text,
+        );
+        let Some(if_version) = if_version(inv, &name).await? else {
+            return Err(published(&name));
+        };
+        let request = request(
+            Verb::Sink,
+            &script,
+            &[
+                ("content", &text),
+                ("language", "sparql"),
+                ("state", "draft"),
+                ("if-version", &if_version),
+            ],
+        )?;
+        let saving = match inv.issue(request).await {
+            Ok(rep) => Saving::Saved(String::from_utf8_lossy(&rep.bytes).trim().to_string()),
+            Err(Error::InvalidArgument { detail, .. }) => Saving::Refused(detail),
+            Err(e @ (Error::Denied(_) | Error::Conflict(_))) => Saving::Unsaved(format!(
+                "a valid draft, not saved: the script host refused to keep it at {script} for \
+                 this caller ({})",
+                detail(&e)
+            )),
+            Err(e) => return Err(e),
+        };
+        Ok((name, text, saving))
+    }
+
     async fn draft(&self, inv: &Invocation<'_>) -> Result<Draft> {
         let config = &self.config;
         let ask = match (optional(inv, "ask")?, optional(inv, "content")?) {
@@ -468,7 +589,7 @@ impl SparqlEndpoint {
             (Some(a), _) | (None, Some(a)) => a,
             (None, None) => return Err(Error::MissingArgument("ask".to_string())),
         };
-        let focus = optional(inv, "graph")?;
+        let (focus, focus_arg) = focus_of(inv)?;
         let n_examples = count(inv, "examples", config.prompt_examples, 16)?;
         let save = optional(inv, "save")?;
         if let Some(name) = save {
@@ -478,9 +599,12 @@ impl SparqlEndpoint {
                 return Err(published(name));
             }
         }
+        let asked = Asked { ask, focus, save };
 
-        // 1. Ground, under the caller.
-        let grounding = check::grounding(inv, focus).await?;
+        // 1. Ground, under the caller: the graphs, the vocabulary and the examples.
+        let grounding = check::grounding(inv, focus)
+            .await
+            .map_err(|e| renamed(e, focus_arg))?;
         let grounding_text = prompt::grounding_text(&grounding);
         let examples_text = prompt::examples_text(&grounding, n_examples);
 
@@ -497,9 +621,10 @@ impl SparqlEndpoint {
         let mut prompts: Vec<(&'static str, String)> = vec![(SPARQL_PROMPT_IRI, main_id)];
         let mut repair: Option<String> = None;
         let mut attempts: Vec<Attempt> = Vec::new();
-        let mut valid: Option<(Check, String)> = None;
-        let mut saved: Option<String> = None;
-        let mut note: Option<String> = None;
+        // The latest valid attempt whose preview was empty: kept if nothing does better.
+        let mut empty: Option<(usize, Check)> = None;
+        // The attempt kept (0-based), its check, its saved text and what came of saving it.
+        let mut kept: Option<(usize, Check, String, Saving)> = None;
         let mut name = String::new();
         let max = config.max_attempts.clamp(1, crate::config::MAX_ATTEMPTS);
         for n in 1..=max {
@@ -511,13 +636,26 @@ impl SparqlEndpoint {
                         prompts.push((REPAIR_PROMPT_IRI, id));
                         repair = Some(text);
                     }
-                    let errors: Vec<String> =
-                        previous.errors.iter().map(|e| format!("- {e}")).collect();
+                    // What the model is shown: what was refused, or, for a valid draft
+                    // that matched nothing, the empty preview and its evidence.
+                    let findings: Vec<String> = if previous.empty_preview {
+                        previous
+                            .warnings
+                            .iter()
+                            .filter(|w| w.starts_with(EMPTY_PREVIEW))
+                            .map(|w| format!("- {w}"))
+                            .collect()
+                    } else {
+                        previous.errors.iter().map(|e| format!("- {e}")).collect()
+                    };
                     format!(
                         "{first}\n{}",
                         prompt::fill(
                             repair.as_deref().unwrap_or_default(),
-                            &[("previous", &previous.text), ("errors", &errors.join("\n"))],
+                            &[
+                                ("previous", &previous.text),
+                                ("errors", &findings.join("\n"))
+                            ],
                         )
                     )
                 }
@@ -533,6 +671,7 @@ impl SparqlEndpoint {
                 valid: false,
                 errors: Vec::new(),
                 warnings: Vec::new(),
+                empty_preview: false,
             };
             if let Some(same) = attempts.iter().find(|a| a.identity == attempt.identity) {
                 attempt.errors.push(format!(
@@ -564,106 +703,102 @@ impl SparqlEndpoint {
             attempt.errors = checked.errors.clone();
             attempt.warnings = checked.warnings.clone();
             attempt.valid = checked.valid;
+            attempt.empty_preview =
+                checked.valid && checked.preview.as_ref().is_some_and(|p| p.is_empty());
             attempts.push(attempt);
             if !checked.valid {
+                continue;
+            }
+            let index = attempts.len() - 1;
+            // An empty preview is a repair trigger while attempts remain (ledger #1242).
+            if attempts[index].empty_preview && n < max {
+                empty = Some((index, checked));
                 continue;
             }
 
             // 5. Save as a draft, under the caller. The script host's analysis and its
             // no-elevation check are the last validation.
-            let activity = activity(ask, focus, &grounding, &prompts, &attempts);
-            name = match save {
-                Some(s) => s.to_string(),
-                None => format!(
-                    "{DRAFT_NAME_PREFIX}{}",
-                    &activity[activity.len() - 64..][..12]
-                ),
-            };
-            let script = format!("urn:script:{name}");
-            let text = saved_text(
-                &prov(&Drafting {
-                    ask,
-                    activity: activity.clone(),
-                    grounding: &grounding,
-                    prompts: prompts.clone(),
-                    attempts: &attempts,
-                    script: Some(script.clone()),
-                }),
-                &attempts[attempts.len() - 1].text,
-            );
-            let Some(if_version) = if_version(inv, &name).await? else {
-                return Err(published(&name));
-            };
-            let request = request(
-                Verb::Sink,
-                &script,
-                &[
-                    ("content", &text),
-                    ("language", "sparql"),
-                    ("state", "draft"),
-                    ("if-version", &if_version),
-                ],
-            )?;
-            match inv.issue(request).await {
-                Ok(rep) => {
-                    saved = Some(String::from_utf8_lossy(&rep.bytes).trim().to_string());
-                    valid = Some((checked, text));
-                    break;
-                }
-                Err(Error::InvalidArgument { detail, .. }) => {
-                    let last = attempts.len() - 1;
-                    attempts[last].valid = false;
-                    attempts[last]
+            let (saved_as, text, saving) = self
+                .save(inv, &asked, &grounding, &prompts, &attempts, index)
+                .await?;
+            name = saved_as;
+            if let Saving::Refused(detail) = &saving {
+                attempts[index].valid = false;
+                attempts[index]
+                    .errors
+                    .push(format!("the script host refused the draft: {detail}"));
+                continue;
+            }
+            kept = Some((index, checked, text, saving));
+            break;
+        }
+        // Drafting stopped (the bound, or a model repeating itself) with nothing better than
+        // a valid draft that matched nothing: keep that one, MARKED, never silently.
+        if kept.is_none() {
+            if let Some((index, checked)) = empty.take() {
+                let (saved_as, text, saving) = self
+                    .save(inv, &asked, &grounding, &prompts, &attempts, index)
+                    .await?;
+                name = saved_as;
+                if let Saving::Refused(detail) = &saving {
+                    attempts[index].valid = false;
+                    attempts[index]
                         .errors
                         .push(format!("the script host refused the draft: {detail}"));
+                } else {
+                    kept = Some((index, checked, text, saving));
                 }
-                Err(e @ (Error::Denied(_) | Error::Conflict(_))) => {
-                    note = Some(format!(
-                        "a valid draft, not saved: the script host refused to keep it at \
-                         {script} for this caller ({})",
-                        detail(&e)
-                    ));
-                    valid = Some((checked, text));
-                    break;
-                }
-                Err(e) => return Err(e),
             }
         }
 
         let activity = activity(ask, focus, &grounding, &prompts, &attempts);
-        if name.is_empty() {
-            name = match save {
-                Some(s) => s.to_string(),
-                None => format!(
-                    "{DRAFT_NAME_PREFIX}{}",
-                    &activity[activity.len() - 64..][..12]
-                ),
-            };
+        if kept.is_none() {
+            name = draft_name(save, &activity);
         }
         let script = format!("urn:script:{name}");
-        let status = match (&valid, &saved) {
-            (Some(_), Some(_)) => Status::Saved,
-            (Some(_), None) => Status::Unsaved,
-            (None, _) => Status::Failed,
+        let empty_preview = kept
+            .as_ref()
+            .is_some_and(|(index, ..)| attempts[*index].empty_preview);
+        let (status, version, note) = match &kept {
+            Some((_, _, _, Saving::Saved(version))) => (Status::Saved, Some(version.clone()), None),
+            Some((_, _, _, Saving::Unsaved(note))) => (Status::Unsaved, None, Some(note.clone())),
+            _ => (
+                Status::Failed,
+                None,
+                Some(format!(
+                    "no draft validated in {} attempt{} (the bound is {max}); every attempt \
+                     and what was wrong with it is listed, and no query is answered",
+                    attempts.len(),
+                    if attempts.len() == 1 { "" } else { "s" },
+                )),
+            ),
         };
-        if status == Status::Failed {
-            note = Some(format!(
-                "no draft validated in {} attempt{} (the bound is {max}); every attempt and \
-                 what was wrong with it is listed, and no query is answered",
-                attempts.len(),
-                if attempts.len() == 1 { "" } else { "s" },
-            ));
-        }
+        let note = if empty_preview {
+            let empty = format!(
+                "its preview is EMPTY: no row matched, and no attempt within the bound of {max} \
+                 did better; the warnings name the patterns that match nothing on their own. \
+                 Review it before publishing"
+            );
+            Some(match note {
+                Some(note) => format!("{note}; and {empty}"),
+                None => empty,
+            })
+        } else {
+            note
+        };
         let prov = prov(&Drafting {
             ask,
             activity: activity.clone(),
             grounding: &grounding,
             prompts,
             attempts: &attempts,
-            script: (status == Status::Saved).then(|| script.clone()),
+            script: match &kept {
+                Some((index, _, _, Saving::Saved(_))) => Some((script.clone(), attempts[*index].n)),
+                _ => None,
+            },
         });
-        let (check, query) = match valid {
-            Some((c, q)) => (Some(c), Some(q)),
+        let (check, query) = match kept {
+            Some((_, c, q, _)) => (Some(c), Some(q)),
             None => (None, None),
         };
         Ok(Draft {
@@ -673,15 +808,27 @@ impl SparqlEndpoint {
             activity,
             name,
             script,
-            version: saved,
+            version,
             query,
             check,
             attempts,
             grounding: grounding.iri.clone(),
             grounding_identity: grounding.identity.clone(),
+            empty_preview,
             note,
             prov,
         })
+    }
+}
+
+/// The name a draft is saved under: `save=`, or the prefix and the drafting's digest.
+fn draft_name(save: Option<&str>, activity: &str) -> String {
+    match save {
+        Some(s) => s.to_string(),
+        None => format!(
+            "{DRAFT_NAME_PREFIX}{}",
+            &activity[activity.len() - 64..][..12]
+        ),
     }
 }
 
@@ -707,14 +854,20 @@ fn activity(
     format!("urn:nl:sparql:drafting:{}", &digest["sha256:".len()..])
 }
 
-/// The plain face: the saved draft and its preview, or every attempt of a failed one.
+/// The plain face: the saved draft and its preview, or every attempt of a failed one. A
+/// draft whose preview is empty says so on its first line.
 fn plain(draft: &Draft) -> String {
     let mut out = String::new();
     match draft.status {
         Status::Saved => out.push_str(&format!(
-            "{} (a DRAFT of {}: review it, then publish it with state=published)\n",
+            "{} (a DRAFT of {}: review it, then publish it with state=published){}\n",
             draft.version.as_deref().unwrap_or(&draft.script),
-            draft.script
+            draft.script,
+            if draft.empty_preview {
+                format!(". {}", draft.note.as_deref().unwrap_or_default())
+            } else {
+                String::new()
+            }
         )),
         Status::Unsaved => out.push_str(&format!(
             "a valid draft, NOT saved: {}\n",
@@ -725,9 +878,13 @@ fn plain(draft: &Draft) -> String {
             draft.note.as_deref().unwrap_or_default()
         )),
     }
+    // The attempt kept: the last valid one (an attempt after it can only have repeated it
+    // or failed).
     if let Some(last) = draft
         .attempts
-        .last()
+        .iter()
+        .rev()
+        .find(|a| a.valid)
         .filter(|_| draft.status != Status::Failed)
     {
         out.push('\n');
@@ -817,8 +974,8 @@ impl Endpoint for SparqlEndpoint {
                  actor, all under the CALLER's capability: ground (urn:nl:grounding), draft \
                  through the host's LLM door, validate (urn:nl:sparql:check: bound and \
                  parse, derived authority against the caller's, every predicate and class \
-                 against the grounding, a dry run), repair a refused draft up to the host's \
-                 bound, and save the valid one as a DRAFT script (urn:script:{name}, \
+                 against the grounding, a dry run), repair a refused draft, or one whose \
+                 preview is empty, up to the host's bound, and save the valid one as a DRAFT script (urn:script:{name}, \
                  language=sparql, state=draft) whose text opens with its provenance: the \
                  ask, each attempt with its model and validation result, the grounding and \
                  the prompts it came from. Never published, never run: a person publishes. \
@@ -845,10 +1002,21 @@ impl Endpoint for SparqlEndpoint {
                             .optional(),
                     )
                     .input(
-                        ArgSpec::new("graph")
+                        ArgSpec::new("focus")
                             .summary(
                                 "Draft against this graph: the grounding's focus (a graph \
-                                 IRI or a topic word).",
+                                 IRI or a topic word), as urn:nl:grounding and \
+                                 urn:nl:sparql:check take it. Optional: with none, the \
+                                 drafter is grounded in every graph the caller may read.",
+                            )
+                            .class(XSD_STRING)
+                            .optional(),
+                    )
+                    .input(
+                        ArgSpec::new("graph")
+                            .summary(
+                                "DEPRECATED alias of `focus=`, accepted for one release; a \
+                                 refusal names the one the caller used.",
                             )
                             .class(XSD_STRING)
                             .optional(),

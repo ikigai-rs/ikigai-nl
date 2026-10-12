@@ -8,8 +8,8 @@ caller's own capability, so a model can never be told about a graph, a script or
 action its user could not reach directly.
 
 ```text
-urn:nl:grounding        Source   focus=  as=text/turtle|application/json
-urn:nl:sparql           Sink     ask= (or piped)  graph=  examples=  save=  as=text/plain|application/json|text/turtle
+urn:nl:grounding        Source   focus=  parts=  as=text/turtle|application/json
+urn:nl:sparql           Sink     ask= (or piped)  focus=  examples=  save=  as=text/plain|application/json|text/turtle
 urn:nl:sparql:check     Source   content= (or piped)  focus=  preview=  as=text/plain|application/json
 urn:nl:prompt:{name}    Source   sparql | sparql-repair
 ```
@@ -27,7 +27,7 @@ under the caller's capability.
 | --- | --- | --- |
 | actions | `urn:kernel:actions` (once per verb), then `Meta as=application/json` of each offered endpoint | every action the caller may take: endpoint or template, verb, the grants it declares, its arguments (name, required, class, default, allowed values) and outputs |
 | vocabulary | `urn:ikigai:vocab` | the `ik:` classes and properties, with labels, comments, domains and ranges |
-| graphs | `urn:iki:store:graphs`, then five stored SPARQL queries per graph | VoID-like totals (triples, subjects, predicates, objects, classes), the classes and predicates used with counts, and a few sample triples |
+| graphs | `urn:iki:store:graphs`, then six stored SPARQL queries per graph, and one more per small closed set | VoID-like totals (triples, subjects, predicates, objects, classes), the classes and predicates used with counts, the KIND of value each predicate takes (IRI, blank node, or literal with its datatype), the values themselves when they are a small closed set (`ledger:status` is `ledger:open`, `ledger:closed`, …), and a few sample triples |
 | examples | `urn:script:catalog` then `urn:script:{name}` (or a configured list) | published scripts the caller may read: language, version, declared grants, source |
 
 The test host's grounding for root, focused on one graph (abridged):
@@ -94,6 +94,26 @@ case-insensitively; a graph also stays when a class or predicate it uses mention
 a vocabulary term also stays when a kept graph uses it. So a focus on one graph keeps its
 shape and the `ik:` terms it is written in, and graphs whose IRI mentions the focus are
 summarized first, so a focus reaches its graph past the graph bound.
+
+### `parts=`
+
+Which parts to read, separated by spaces or commas (`actions`, `vocabulary`, `graphs`,
+`examples`); every part when absent. A part left out is stated empty, with a note saying
+so and, for the actions, how many the manifold offers; nothing is read for it. The SPARQL
+drafter and the check read `vocabulary graphs examples` (`DRAFTING_PARTS`): a query is not
+an action call, and the actions are one `Meta` read per offered door, which on gonk was
+1,529 actions and about 100 KB per browse root, enough to take an unfocused ask over the
+1 MiB bound before any model was asked (ledger #1243). The bound and its refusal still
+hold for what remains.
+
+### Value kinds
+
+Each listed predicate states the kinds of value it takes, with counts, and, when its
+distinct values number at most `max_values` (default 8) and repeat (each used twice on
+average), the values themselves, most used first. A drafter told that `ledger:status`
+takes an IRI, one of `ledger:open` and `ledger:closed`, does not write `"open"`, which
+matches nothing (ledger #1242). The JSON face and the drafting prompt carry them; the
+Turtle face does not yet (see below).
 
 ## Mounting it
 
@@ -168,9 +188,12 @@ preview (LIMIT 5):
 The model is a **drafter, never an actor**. Every step is a resource call under the
 CALLER's capability, never more:
 
-1. **Ground**: `urn:nl:grounding`, focused by `graph=`. The prompt states each graph's
-   classes, predicates and samples, and the vocabulary terms those graphs use (all the
-   focused terms, when `graph=` is given). The actions are left out: a query is not an
+1. **Ground**: `urn:nl:grounding` with `parts=vocabulary graphs examples`, focused by
+   `focus=` (the name the grounding and the check use; `graph=` is accepted as its alias
+   for one release, and a refusal names whichever the caller used). The prompt states each
+   graph's classes, its predicates with the kind of value each takes (and the values of a
+   small closed set), and samples, and the vocabulary terms those graphs use (all the
+   focused terms, when a focus is given). The actions are not even read: a query is not an
    action call, and the store's query doors are the host's choice, not the model's.
 2. **Draft**: `urn:nl:prompt:sparql`, filled with the ask, the grounding and up to
    `examples=` published SPARQL scripts, sent to the host's LLM door (`SpaceConfig::llm`):
@@ -194,11 +217,16 @@ CALLER's capability, never more:
      reads and the vocabulary: unknown is an error, or a warning when a graph's partitions
      were bounded, because then the grounding cannot know;
    - a dry run: the parameters' defaults bound into the algebra (never spliced), under
-     `LIMIT preview_rows`, through the store's graph-scoped door.
+     `LIMIT preview_rows`, through the store's graph-scoped door. An EMPTY preview is a
+     warning, not an error (an answer can be empty for good reason), with its evidence:
+     each triple pattern is run alone, in its `GRAPH`, under the same `LIMIT`, and those
+     that match nothing on their own are named (`unmatched`, at most `MAX_PROBES` = 16
+     probed). When each matches something, the warning says it is their combination.
 
    Every finding is a value in the answer, never a refusal, so the check caches.
 4. **Repair**: a refused draft goes back with `urn:nl:prompt:sparql-repair`: the previous
-   draft and exactly what was refused, nothing else. **The bound is 3 attempts** by
+   draft and exactly what was refused, nothing else. So does a valid draft whose preview
+   is empty, with the empty-preview warning and its evidence (ledger #1242). **The bound is 3 attempts** by
    default (`max_attempts`, at most `MAX_ATTEMPTS` = 8), and drafting also stops the first
    time the model answers a draft it already gave, because a model repeating itself is not
    converging. 3 is a cost bound, not a measured optimum: each attempt is one model call,
@@ -217,7 +245,11 @@ CALLER's capability, never more:
    like any other. A published script is never replaced (refused before any model is
    asked). A caller who may not write the script gets the valid draft answered,
    **unsaved**. A draft that never validates is answered as **failed**, with every attempt
-   and its errors, and no query.
+   and its errors, and no query. ★ A valid draft whose preview is still empty when
+   drafting stops (the bound, or the model repeating it) is kept, **marked**: the answer's
+   `emptyPreview` and `note`, the plain answer's first line, and, in its provenance, the
+   attempt it derives from carries the `ik:draftWarning` that begins `the preview is empty`
+   (`EMPTY_PREVIEW`). Never saved silently.
 
 ### Provenance
 
@@ -305,10 +337,14 @@ stated.
 - **`urn:nl:script`**, the plan-then-Lisp drafter: the next arc. It can reuse the
   grounding, the prompt resources (with its own templates), the repair loop's shape, the
   provenance builder and the save-as-draft step; it needs the actions part, which a graph
-  focus drops today (a `parts=` selector on the grounding would fix that).
+  focus drops, so it can ask for `parts=actions` unfocused beside a focused read of the
+  rest.
 - **A measured repair bound.** See above: 3 is a cost bound.
 - **IRIs beyond predicates and classes.** The check does not judge instance IRIs, IRIs in
   expressions, `FILTER EXISTS` patterns or a CONSTRUCT template.
+- **Value kinds in Turtle.** A predicate's value kinds and closed-set values are in the
+  JSON face and the drafting prompt; the Turtle face does not state them, because no term
+  for them exists yet: VoID has none, and an `ik:` term is a vocabulary change.
 - **Example parameters in Turtle.** A script document's `parameters` are passed through
   in the JSON face as the script host states them; the Turtle face does not state them
   yet.

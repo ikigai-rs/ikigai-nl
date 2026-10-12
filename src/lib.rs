@@ -21,7 +21,7 @@
 //! | --- | --- | --- |
 //! | actions | `urn:kernel:actions` (once per verb), then `Meta as=application/json` of each offered endpoint | every action the caller may take, with its arguments |
 //! | vocabulary | `urn:ikigai:vocab` | the `ik:` classes and properties with their comments |
-//! | graphs | `urn:iki:store:graphs`, then five SPARQL queries per graph through `urn:iki:store:graph-select` | VoID-like totals, classes and predicates with counts, sample triples |
+//! | graphs | `urn:iki:store:graphs`, then six SPARQL queries per graph through `urn:iki:store:graph-select` | VoID-like totals, classes and predicates with counts, each predicate's value kinds (and a small closed set's values), sample triples |
 //! | examples | `urn:script:catalog`, then `urn:script:{name}` (or a configured list) | published scripts as worked examples |
 //!
 //! A host mounts [`space`] beside the resources it composes. The kernel needs a JSON Meta
@@ -64,11 +64,11 @@ use std::sync::Arc;
 
 use ikigai_core::{EndpointSpace, Exact, UriTemplate};
 
-pub use check::{Check, Param, Preview, CHECK_IRI};
+pub use check::{Check, Param, Preview, CHECK_IRI, DRAFTING_PARTS, EMPTY_PREVIEW, MAX_PROBES};
 pub use config::{Escalation, Examples, Llm, SpaceConfig, DEFAULT_MAX_TOKENS, MAX_ATTEMPTS};
 pub use drafter::{prov_of, Attempt, Draft, Status, DRAFT_NAME_PREFIX, SPARQL_IRI};
 pub use gather::{ACTIONS_IRI, CATALOG_IRI, GRAPHS_IRI, GRAPH_SELECT_IRI, SELECT_IRI, VOCAB_IRI};
-pub use model::{Action, Example, GraphShape, Grounding, Input, Part, Partition, Term};
+pub use model::{Action, Example, GraphShape, Grounding, Input, Part, Partition, Term, ValueKind};
 pub use render::VOID;
 
 /// `urn:nl:grounding`.

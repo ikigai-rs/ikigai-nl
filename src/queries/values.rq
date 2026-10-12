@@ -1,0 +1,8 @@
+# The values one predicate takes in one named graph, most used first (`?g` and `?property`
+# both bound by `bindings=`, never spliced). Asked only for a predicate whose distinct
+# values the kinds query counted as a small closed set.
+SELECT ?g ?property ?o (COUNT(*) AS ?count)
+WHERE { GRAPH ?g { ?s ?property ?o } }
+GROUP BY ?g ?property ?o
+ORDER BY DESC(?count) ?o
+LIMIT {limit}

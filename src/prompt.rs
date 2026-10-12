@@ -12,7 +12,7 @@ use ikigai_core::{
     Result, Verb,
 };
 
-use crate::model::{Grounding, Term};
+use crate::model::{Grounding, Term, ValueKind};
 
 /// The prompt-template family: `urn:nl:prompt:{name}`.
 pub const PROMPT_TEMPLATE: &str = "urn:nl:prompt:{name}";
@@ -102,17 +102,25 @@ pub fn grounding_text(grounding: &Grounding) -> String {
             ));
         }
         if !shape.property_partitions.is_empty() {
-            let properties: Vec<String> = shape
-                .property_partitions
-                .iter()
-                .map(|p| format!("<{}> ({})", p.iri, p.count))
-                .collect();
+            // One line per predicate, with the kind of value it takes: a drafter that
+            // knows `ledger:status` takes an IRI, and which ones, writes `ledger:open`
+            // rather than guessing `"open"` (ledger #1242).
             out.push_str(&format!(
-                "  predicates ({} of {}): {}\n",
-                properties.len(),
+                "  predicates ({} of {}), each with the kind of value it takes:\n",
+                shape.property_partitions.len(),
                 shape.properties,
-                properties.join(", ")
             ));
+            for p in &shape.property_partitions {
+                out.push_str(&format!("    <{}> ({})", p.iri, p.count));
+                let kinds: Vec<String> = p.kinds.iter().map(kind_text).collect();
+                if !kinds.is_empty() {
+                    out.push_str(&format!(": {}", kinds.join(" or ")));
+                }
+                if !p.values.is_empty() {
+                    out.push_str(&format!(", one of {}", p.values.join(" ")));
+                }
+                out.push('\n');
+            }
         }
         for sample in &shape.samples {
             out.push_str(&format!("  sample: {sample}\n"));
@@ -140,6 +148,23 @@ pub fn grounding_text(grounding: &Grounding) -> String {
         }
     }
     out
+}
+
+/// A value kind as a prompt states it: `IRI`, `blank node`, or `literal` with its datatype
+/// (`xsd:` written short, a language tag said in words).
+fn kind_text(kind: &ValueKind) -> String {
+    const XSD: &str = "http://www.w3.org/2001/XMLSchema#";
+    const LANG_STRING: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#langString";
+    match (kind.kind.as_str(), kind.datatype.as_deref()) {
+        ("iri", _) => "IRI".to_string(),
+        ("blank", _) => "blank node".to_string(),
+        (_, Some(LANG_STRING)) => "literal with a language tag".to_string(),
+        (_, Some(datatype)) => match datatype.strip_prefix(XSD) {
+            Some(local) => format!("literal xsd:{local}"),
+            None => format!("literal <{datatype}>"),
+        },
+        (other, None) => other.to_string(),
+    }
 }
 
 /// Up to `n` of the grounding's published SPARQL scripts, as worked examples.
@@ -220,7 +245,7 @@ impl Endpoint for PromptEndpoint {
             .summary(
                 "The template a natural-language drafter fills before it asks a model, as \
                  text with {{placeholders}}: `sparql` (the first draft) and `sparql-repair` \
-                 (what a repair adds: the previous draft and what the checker refused). A \
+                 (what a repair adds: the previous draft and what the checker found). A \
                  draft's provenance cites the prompt by IRI and sha256.",
             )
             .verb(Verb::Meta)

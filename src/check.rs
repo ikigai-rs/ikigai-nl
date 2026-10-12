@@ -14,7 +14,12 @@
 //!    the vocabulary. An IRI nothing knows is an error; when a graph's partitions were
 //!    bounded ("first N of M"), it is a warning instead, because the grounding cannot know.
 //! 4. **A dry run**: the query, its parameters' defaults bound, under a small `LIMIT`,
-//!    through the store's graph-scoped door, under the caller's capability.
+//!    through the store's graph-scoped door, under the caller's capability. An EMPTY
+//!    preview is not an error (an answer can be legitimately empty), but it is a warning
+//!    ([`EMPTY_PREVIEW`]) with its evidence: each triple pattern is run alone under the same
+//!    `LIMIT`, and those that match nothing on their own are named ([`Check::unmatched`]),
+//!    so `"open"` where the data holds `ledger:open` is named, not guessed at. The drafter
+//!    repairs on it (ledger #1242).
 //!
 //! Every finding is a VALUE in the answer, never a refusal: a refusal is never cached, and
 //! "this draft is wrong" is a legitimate answer, not a failure of the resource.
@@ -46,6 +51,20 @@ pub const CHECK_IRI: &str = "urn:nl:sparql:check";
 
 /// The most rows (or triples) a dry run may preview.
 pub const MAX_PREVIEW: usize = 50;
+
+/// The most triple patterns an empty preview is probed with, one store query each.
+pub const MAX_PROBES: usize = 16;
+
+/// How the warning about an empty preview begins, in a check, in an attempt's warnings and
+/// in a saved draft's provenance (`ik:draftWarning`), so a reader can find it.
+pub const EMPTY_PREVIEW: &str = "the preview is empty";
+
+/// The grounding parts the SPARQL drafter and this check read (`parts=`): the graphs, the
+/// vocabulary and the worked examples. Never the actions: a query is not an action call,
+/// the store's query doors are the host's choice, and on a host with many doors the
+/// actions are most of the grounding (1,529 of them on gonk, about 100 KB per browse
+/// root), which took an unfocused ask over the size bound (ledger #1243).
+pub const DRAFTING_PARTS: &str = "vocabulary graphs examples";
 
 const PLAIN: &str = "text/plain";
 const JSON: &str = "application/json";
@@ -96,6 +115,12 @@ pub struct Check {
     /// The dry run, when every check before it passed and a preview was asked for.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub preview: Option<Preview>,
+    /// When the preview is empty: each triple pattern that matches nothing on its own, run
+    /// alone under the preview's `LIMIT` in the graphs the query reads, as SPARQL (`GRAPH
+    /// <g> { ?item <…#status> "open" }`). Empty when the preview has rows, and when every
+    /// pattern matches something (then their combination is what matches nothing).
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub unmatched: Vec<String>,
 }
 
 /// One declared parameter.
@@ -152,6 +177,7 @@ impl Check {
             errors: Vec::new(),
             warnings: Vec::new(),
             preview: None,
+            unmatched: Vec::new(),
         }
     }
 
@@ -201,6 +227,22 @@ impl Check {
 }
 
 impl Preview {
+    /// Whether the dry run found nothing: no row for a SELECT, no triple for a CONSTRUCT or
+    /// DESCRIBE. An ASK is never empty: `false` is its answer.
+    ///
+    /// ```
+    /// let p: ikigai_nl::Preview = serde_json::from_str(
+    ///     r#"{ "limit": 5, "graphs": ["urn:g"], "columns": ["n"] }"#,
+    /// ).unwrap();
+    /// assert!(p.is_empty());
+    /// let ask: ikigai_nl::Preview =
+    ///     serde_json::from_str(r#"{ "limit": 5, "graphs": ["urn:g"], "boolean": false }"#).unwrap();
+    /// assert!(!ask.is_empty());
+    /// ```
+    pub fn is_empty(&self) -> bool {
+        self.boolean.is_none() && self.rows.is_empty() && self.triples.is_empty()
+    }
+
     /// The plain-text face of the rows.
     pub fn to_text(&self) -> String {
         let mut out = format!("preview (LIMIT {}):\n", self.limit);
@@ -247,9 +289,10 @@ pub(crate) fn holds(cap: &Capability, scope: &str) -> bool {
     }
 }
 
-/// The grounding's JSON face, read under the caller.
+/// The grounding's JSON face, as the drafter and this check read it ([`DRAFTING_PARTS`]),
+/// under the caller.
 pub(crate) async fn grounding(inv: &Invocation<'_>, focus: Option<&str>) -> Result<Grounding> {
-    let mut args = vec![("as", JSON)];
+    let mut args = vec![("as", JSON), ("parts", DRAFTING_PARTS)];
     if let Some(f) = focus {
         args.push(("focus", f));
     }
@@ -419,7 +462,10 @@ pub(crate) async fn check(
         )
         .await
         {
-            Ok(p) => check.preview = Some(p),
+            Ok((p, unmatched)) => {
+                check.preview = Some(p);
+                check.unmatched = unmatched;
+            }
             Err(e) => check.errors.push(format!("the dry run failed: {e}")),
         }
     }
@@ -437,7 +483,7 @@ async fn preview(
     grounding: &Grounding,
     rows: usize,
     warnings: &mut Vec<String>,
-) -> std::result::Result<Preview, String> {
+) -> std::result::Result<(Preview, Vec<String>), String> {
     let mut values: BTreeMap<String, Value> = BTreeMap::new();
     for p in &analysis.parameters {
         match &p.default {
@@ -471,13 +517,18 @@ async fn preview(
         _ => NTRIPLES,
     };
     let graphs = dataset.iter().cloned().collect::<Vec<_>>().join(" ");
-    let request = request(
-        Verb::Source,
-        &door.query_iri(bound.form),
-        &[("query", &limited), ("graph", &graphs), ("as", face)],
-    )
-    .map_err(|e| e.to_string())?;
-    let rep = inv.issue(request).await.map_err(|e| e.to_string())?;
+    let request_for = |query: &str, form: Form, face: &str| {
+        request(
+            Verb::Source,
+            &door.query_iri(form),
+            &[("query", query), ("graph", &graphs), ("as", face)],
+        )
+        .map_err(|e| e.to_string())
+    };
+    let rep = inv
+        .issue(request_for(&limited, bound.form, face)?)
+        .await
+        .map_err(|e| e.to_string())?;
     let mut preview = Preview {
         limit: rows,
         graphs: dataset.into_iter().collect(),
@@ -515,7 +566,163 @@ async fn preview(
             .map(str::to_string)
             .collect();
     }
-    Ok(preview)
+    if !preview.is_empty() {
+        return Ok((preview, Vec::new()));
+    }
+
+    // Empty: run each triple pattern alone, in its GRAPH, under the same LIMIT and over the
+    // same dataset, and name the ones that match nothing. Evidence for a person and for a
+    // repair, never a verdict: an answer can be empty for good reason.
+    let patterns = Probe::all(&bound.text);
+    let probed: Vec<&Probe> = patterns.iter().take(MAX_PROBES).collect();
+    let requests = probed
+        .iter()
+        .map(|p| request_for(&p.query(rows), Form::Select, SPARQL_JSON))
+        .collect::<std::result::Result<Vec<_>, String>>()?;
+    let mut unmatched = Vec::new();
+    for (probe, result) in probed.iter().zip(inv.fan_out(requests).await) {
+        // A probe the store would not run says nothing either way: it is left out.
+        let Ok(rep) = result else { continue };
+        let Ok(results) = serde_json::from_slice::<Results>(&rep.bytes) else {
+            continue;
+        };
+        if results.results.is_some_and(|set| set.bindings.is_empty()) {
+            unmatched.push(probe.text.clone());
+        }
+    }
+    unmatched.dedup();
+    let past = if patterns.len() > probed.len() {
+        format!(
+            " (the first {} of its {} patterns were probed)",
+            probed.len(),
+            patterns.len()
+        )
+    } else {
+        String::new()
+    };
+    warnings.push(if unmatched.is_empty() {
+        format!(
+            "{EMPTY_PREVIEW}: no row matches, yet each of its {} triple patterns matches \
+             something on its own{past}, so it is their combination (a join, a FILTER or a \
+             parameter's default) that matches nothing",
+            probed.len()
+        )
+    } else {
+        format!(
+            "{EMPTY_PREVIEW}: no row matches, and these triple patterns match nothing on \
+             their own in the graphs it reads{past}: {}. A string written where the data \
+             holds an IRI (or the reverse), or a literal of another datatype, matches \
+             nothing: compare each with the kind of value its predicate takes",
+            unmatched.join("; ")
+        )
+    });
+    Ok((preview, unmatched))
+}
+
+/// One triple pattern of a query, in the GRAPH it is read in, to be run alone.
+struct Probe {
+    graph: Option<NamedNodePattern>,
+    pattern: GraphPattern,
+    /// The pattern as SPARQL, in its GRAPH: what a person and a model are shown.
+    text: String,
+}
+
+impl Probe {
+    /// Every triple pattern (and property path) a solution must match, in order: the WHERE
+    /// clause's basic graph patterns, both sides of a join or union, the left of an
+    /// OPTIONAL or MINUS (their right sides cannot empty an answer), and inside every
+    /// GRAPH, filter, projection and modifier. Not walked: SERVICE (refused before this),
+    /// VALUES, and `FILTER EXISTS` patterns.
+    fn all(text: &str) -> Vec<Probe> {
+        let mut out = Vec::new();
+        if let Ok(query) = SparqlParser::new().parse_query(text) {
+            match &query {
+                Query::Select { pattern, .. }
+                | Query::Ask { pattern, .. }
+                | Query::Construct { pattern, .. }
+                | Query::Describe { pattern, .. } => Probe::walk(pattern, None, &mut out),
+            }
+        }
+        out
+    }
+
+    fn walk(p: &GraphPattern, graph: Option<&NamedNodePattern>, out: &mut Vec<Probe>) {
+        match p {
+            GraphPattern::Bgp { patterns } => {
+                for t in patterns {
+                    out.push(Probe::new(
+                        graph,
+                        GraphPattern::Bgp {
+                            patterns: vec![t.clone()],
+                        },
+                        t.to_string(),
+                    ));
+                }
+            }
+            GraphPattern::Path {
+                subject,
+                path,
+                object,
+            } => out.push(Probe::new(
+                graph,
+                p.clone(),
+                format!("{subject} {path} {object}"),
+            )),
+            GraphPattern::Join { left, right } | GraphPattern::Union { left, right } => {
+                Probe::walk(left, graph, out);
+                Probe::walk(right, graph, out);
+            }
+            GraphPattern::LeftJoin { left, .. } | GraphPattern::Minus { left, .. } => {
+                Probe::walk(left, graph, out)
+            }
+            GraphPattern::Graph { name, inner } => Probe::walk(inner, Some(name), out),
+            GraphPattern::Filter { inner, .. }
+            | GraphPattern::Extend { inner, .. }
+            | GraphPattern::OrderBy { inner, .. }
+            | GraphPattern::Project { inner, .. }
+            | GraphPattern::Distinct { inner }
+            | GraphPattern::Reduced { inner }
+            | GraphPattern::Slice { inner, .. }
+            | GraphPattern::Group { inner, .. } => Probe::walk(inner, graph, out),
+            // SERVICE is refused by the analysis; VALUES names no pattern; LATERAL (a
+            // feature a sibling's build may unify in) is refused by the analysis too.
+            #[allow(unreachable_patterns)] // feature unification can add variants
+            _ => {}
+        }
+    }
+
+    fn new(graph: Option<&NamedNodePattern>, pattern: GraphPattern, text: String) -> Probe {
+        let text = match graph {
+            Some(g) => format!("GRAPH {g} {{ {text} }}"),
+            None => text,
+        };
+        Probe {
+            graph: graph.cloned(),
+            pattern,
+            text,
+        }
+    }
+
+    /// `SELECT * WHERE { [GRAPH g] { pattern } } LIMIT rows`, serialized by spargebra.
+    fn query(&self, rows: usize) -> String {
+        let inner = match &self.graph {
+            Some(name) => GraphPattern::Graph {
+                name: name.clone(),
+                inner: Box::new(self.pattern.clone()),
+            },
+            None => self.pattern.clone(),
+        };
+        Query::Select {
+            dataset: None,
+            pattern: GraphPattern::Slice {
+                inner: Box::new(inner),
+                start: 0,
+                length: Some(rows.max(1)),
+            },
+            base_iri: None,
+        }
+        .to_string()
+    }
 }
 
 /// SPARQL 1.1 JSON results, as much of them as a preview reads.
@@ -763,8 +970,9 @@ impl Endpoint for CheckEndpoint {
                  analysis (form, declared parameters, dataset); its DERIVED authority \
                  against the caller's (a graph the caller cannot read is refused in the same \
                  words as one that does not exist); every predicate and class it names \
-                 against the grounding; and a dry run under a small LIMIT. Every finding is \
-                 a value in the answer, never a refusal.",
+                 against the grounding; and a dry run under a small LIMIT, which, when it \
+                 is empty, names the triple patterns that match nothing on their own. Every \
+                 finding is a value in the answer, never a refusal.",
             )
             .verb(Verb::Meta)
             .action(

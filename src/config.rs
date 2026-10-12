@@ -49,6 +49,11 @@ pub struct SpaceConfig {
     pub max_partitions: usize,
     /// The most sample triples per graph.
     pub samples: usize,
+    /// The largest set of values a predicate's partition lists: a predicate with at most
+    /// this many distinct values, each used twice on average, is a small closed set
+    /// (`ledger:status`), and the grounding lists them so a drafter writes the IRI the data
+    /// holds instead of guessing a string (ledger #1242). 0 lists none.
+    pub max_values: usize,
     /// The most worked examples.
     pub max_examples: usize,
     /// Where the examples come from.
@@ -187,6 +192,7 @@ impl Default for SpaceConfig {
             max_graphs: 32,
             max_partitions: 25,
             samples: 5,
+            max_values: 8,
             max_examples: 16,
             examples: Examples::Catalog,
             llm: Llm::default(),
@@ -200,7 +206,7 @@ impl Default for SpaceConfig {
 
 impl SpaceConfig {
     /// The defaults: 1 MiB, 32 graphs, 25 classes and 25 predicates and 5 samples per
-    /// graph, 16 examples from the catalog; for the drafter, the host's default model at
+    /// graph, the values of a predicate with at most 8, 16 examples from the catalog; for the drafter, the host's default model at
     /// temperature 0 and at most [`DEFAULT_MAX_TOKENS`] tokens a draft, three attempts, five
     /// preview rows, three worked examples, and the store at `urn:iki:store:`.
     pub fn new() -> Self {
@@ -228,6 +234,12 @@ impl SpaceConfig {
     /// Set [`samples`](Self::samples).
     pub fn samples(mut self, samples: usize) -> Self {
         self.samples = samples;
+        self
+    }
+
+    /// Set [`max_values`](Self::max_values).
+    pub fn max_values(mut self, values: usize) -> Self {
+        self.max_values = values;
         self
     }
 

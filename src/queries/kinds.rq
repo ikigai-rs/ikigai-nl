@@ -1,0 +1,13 @@
+# The kinds of value each predicate of one named graph takes (`?g` bound by `bindings=`):
+# an IRI, a blank node, or a literal with its datatype, with how many triples and how many
+# distinct values of each, most triples first. `LIMIT` is an unsigned integer the caller
+# formats itself.
+SELECT ?g ?property ?kind ?datatype (COUNT(*) AS ?count) (COUNT(DISTINCT ?o) AS ?distinct)
+WHERE {
+  GRAPH ?g { ?s ?property ?o }
+  BIND(IF(isIRI(?o), "iri", IF(isBlank(?o), "blank", "literal")) AS ?kind)
+  BIND(DATATYPE(?o) AS ?datatype)
+}
+GROUP BY ?g ?property ?kind ?datatype
+ORDER BY DESC(?count) ?property ?kind ?datatype
+LIMIT {limit}
