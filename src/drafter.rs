@@ -15,7 +15,9 @@
 //!    and what was refused, up to the host's bound ([`crate::SpaceConfig::max_attempts`]).
 //!    So does a valid draft whose preview is EMPTY, with the check's evidence: the triple
 //!    patterns that match nothing on their own (ledger #1242). A model that answers a draft
-//!    it already gave is stopped there: it will not converge.
+//!    it already gave is stopped there: it will not converge. That attempt is recorded as a
+//!    REPEAT ([`Attempt::repeat_of`], `prov:alternateOf` the attempt it repeats), and the
+//!    answer says `drafting stopped: the model repeated attempt N` (ledger #1298).
 //! 5. **Save as a draft**: a Sink on `urn:script:{name}` with `language=sparql` and
 //!    `state=draft`, whose text opens with the drafting's provenance as N-Triples comment
 //!    lines ([`prov_of`] reads them back). The script host analyzes it again and refuses
@@ -134,6 +136,28 @@ pub struct Attempt {
     /// attempts remained, and marked when it is what was kept.
     #[serde(skip_serializing_if = "std::ops::Not::not", default)]
     pub empty_preview: bool,
+    /// The earlier attempt (its `n`) this one gave again, word for word: a REPEAT, not a
+    /// new draft, so drafting stopped here (ledger #1298). It is not checked again, so
+    /// `valid` is false and its one error says which attempt it repeats; a consumer
+    /// counting FAILED drafts counts the attempts that are neither valid nor a repeat.
+    /// Absent (`None`) on every attempt that is not a repeat.
+    ///
+    /// ```
+    /// use ikigai_nl::Attempt;
+    ///
+    /// let repeat: Attempt = serde_json::from_value(serde_json::json!({
+    ///     "n": 2, "backend": "urn:llm:ask", "text": "ASK {}", "identity": "sha256:…",
+    ///     "valid": false, "errors": ["the same draft as attempt 1; …"], "warnings": [],
+    ///     "repeatOf": 1
+    /// }))
+    /// .unwrap();
+    /// assert_eq!(repeat.repeat_of, Some(1));
+    /// // And an attempt that is not one carries no `repeatOf` at all.
+    /// let first = Attempt { n: 1, repeat_of: None, ..repeat };
+    /// assert!(serde_json::to_value(&first).unwrap().get("repeatOf").is_none());
+    /// ```
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub repeat_of: Option<usize>,
 }
 
 /// What `urn:nl:sparql` answers.
@@ -169,11 +193,13 @@ pub struct Draft {
     /// Its identity.
     pub grounding_identity: String,
     /// The draft kept (saved or answered) matched nothing in its preview: no attempt
-    /// within the bound did better. A person reviewing it is told so on the first line.
+    /// within the bound did better, or drafting stopped earlier because the model repeated
+    /// a draft (the `note` says which). A person reviewing it is told so on the first line.
     #[serde(skip_serializing_if = "std::ops::Not::not", default)]
     pub empty_preview: bool,
     /// Why the draft was not saved, how it failed, or that its preview is empty, in a
-    /// sentence.
+    /// sentence; and, when the model repeated a draft, `drafting stopped: the model
+    /// repeated attempt N` rather than the bound, which it did not reach.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub note: Option<String>,
     /// The provenance, as N-Triples.
@@ -437,6 +463,14 @@ fn prov(d: &Drafting<'_>) -> String {
         if let Some(prev) = &previous {
             push(&e, &format!("{PROV}wasRevisionOf"), iri(prev));
         }
+        // A repeat presents the same draft as the attempt it repeats (ledger #1298).
+        if let Some(of) = attempt.repeat_of {
+            push(
+                &e,
+                &format!("{PROV}alternateOf"),
+                iri(&format!("{a}:attempt:{of}")),
+            );
+        }
         previous = Some(e);
     }
     if let Some((script, from)) = &d.script {
@@ -626,6 +660,8 @@ impl SparqlEndpoint {
         // The attempt kept (0-based), its check, its saved text and what came of saving it.
         let mut kept: Option<(usize, Check, String, Saving)> = None;
         let mut name = String::new();
+        // The attempt the model repeated, when that is what stopped drafting.
+        let mut repeated: Option<usize> = None;
         let max = config.max_attempts.clamp(1, crate::config::MAX_ATTEMPTS);
         for n in 1..=max {
             let prompt = match attempts.last() {
@@ -672,6 +708,7 @@ impl SparqlEndpoint {
                 errors: Vec::new(),
                 warnings: Vec::new(),
                 empty_preview: false,
+                repeat_of: None,
             };
             if let Some(same) = attempts.iter().find(|a| a.identity == attempt.identity) {
                 attempt.errors.push(format!(
@@ -679,6 +716,8 @@ impl SparqlEndpoint {
                      stops here",
                     same.n
                 ));
+                attempt.repeat_of = Some(same.n);
+                repeated = Some(same.n);
                 attempts.push(attempt);
                 break;
             }
@@ -766,18 +805,26 @@ impl SparqlEndpoint {
                 Status::Failed,
                 None,
                 Some(format!(
-                    "no draft validated in {} attempt{} (the bound is {max}); every attempt \
-                     and what was wrong with it is listed, and no query is answered",
+                    "no draft validated in {} attempt{} ({}); every attempt and what was wrong \
+                     with it is listed, and no query is answered",
                     attempts.len(),
                     if attempts.len() == 1 { "" } else { "s" },
+                    match repeated {
+                        Some(of) => stopped(of),
+                        None => format!("the bound is {max}"),
+                    },
                 )),
             ),
         };
         let note = if empty_preview {
+            // Say what stopped drafting: the bound, or a repeat well short of it.
+            let why = match repeated {
+                Some(of) => format!("{}, so no later attempt did better", stopped(of)),
+                None => format!("no attempt within the bound of {max} did better"),
+            };
             let empty = format!(
-                "its preview is EMPTY: no row matched, and no attempt within the bound of {max} \
-                 did better; the warnings name the patterns that match nothing on their own. \
-                 Review it before publishing"
+                "its preview is EMPTY: no row matched, and {why}; the warnings name the \
+                 patterns that match nothing on their own. Review it before publishing"
             );
             Some(match note {
                 Some(note) => format!("{note}; and {empty}"),
@@ -819,6 +866,11 @@ impl SparqlEndpoint {
             prov,
         })
     }
+}
+
+/// What a note says when the model repeated attempt `of`, which is what stopped drafting.
+fn stopped(of: usize) -> String {
+    format!("drafting stopped: the model repeated attempt {of}")
 }
 
 /// The name a draft is saved under: `save=`, or the prefix and the drafting's digest.
