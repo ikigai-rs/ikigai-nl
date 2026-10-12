@@ -317,6 +317,17 @@ impl Host {
 
 /// A host whose stub model answers each ask in `drafts` with its drafts, in order.
 pub fn drafting_host(config: SpaceConfig, drafts: &[(&str, &[&str])]) -> Host {
+    let store = DurableStore::in_memory().expect("an in-memory store");
+    drafting_host_over(config, store, drafts)
+}
+
+/// [`drafting_host`] over a store the test built, so it can set the store's own limits (its
+/// time budget, say) as a host does.
+pub fn drafting_host_over(
+    config: SpaceConfig,
+    store: DurableStore,
+    drafts: &[(&str, &[&str])],
+) -> Host {
     let stub = Arc::new(Mutex::new(Stub {
         drafts: drafts
             .iter()
@@ -325,7 +336,7 @@ pub fn drafting_host(config: SpaceConfig, drafts: &[(&str, &[&str])]) -> Host {
         calls: Vec::new(),
     }));
     let backend = Arc::new(MemoryBackend::new());
-    let kernel = kernel(config, stub.clone(), backend.clone());
+    let kernel = kernel(config, stub.clone(), backend.clone(), store);
     Host {
         kernel,
         stub,
@@ -339,8 +350,12 @@ pub fn host(config: SpaceConfig) -> Kernel {
     drafting_host(config, &[]).kernel
 }
 
-fn kernel(config: SpaceConfig, stub: Arc<Mutex<Stub>>, backend: Arc<MemoryBackend>) -> Kernel {
-    let store = DurableStore::in_memory().expect("an in-memory store");
+fn kernel(
+    config: SpaceConfig,
+    stub: Arc<Mutex<Stub>>,
+    backend: Arc<MemoryBackend>,
+    store: DurableStore,
+) -> Kernel {
     let root = Fallback::new(vec![
         Arc::new(ikigai_nl::space(config)) as Arc<dyn Space>,
         Arc::new(store_space(store)) as Arc<dyn Space>,
