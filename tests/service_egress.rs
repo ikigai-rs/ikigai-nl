@@ -5,14 +5,14 @@
 //! wherever `oxigraph/http-client` is unified on (rudof_rdf does it for every native host that
 //! links ikigai-shacl, so `ikigai-cli`). It does not hold for this crate's code. ikigai-nl has no
 //! `oxigraph` in its library graph at all (`cargo tree -e normal -i oxigraph` is empty), builds
-//! no `SparqlEvaluator`, and evaluates nothing in-process: `src/script_sparql.rs` only PARSES
-//! (spargebra). What does reach an evaluator is the dry run in `urn:nl:sparql:check` (and so in
+//! no `SparqlEvaluator`, and evaluates nothing in-process: the script host's analysis
+//! (`ikigai_script::sparql`) only PARSES (spargebra). What does reach an evaluator is the dry run in `urn:nl:sparql:check` (and so in
 //! every `urn:nl:sparql` attempt), a sub-request carrying caller- or model-supplied text to the
 //! host's store at `urn:iki:store:graph-{select,ask,construct,describe}`. That door is the
 //! store's, and before ikigai-store 0.2.10 it fetched a `SERVICE` in such a build: the
 //! `the_store_door_the_dry_run_uses_refuses_service` test below is that reproduction, and it
 //! fails on 0.2.7 under the probe feature. This crate never forwards one, because the analysis
-//! (a copy of ikigai-script's) refuses `SERVICE` anywhere in the algebra and any update
+//! (ikigai-script's own) refuses `SERVICE` anywhere in the algebra and any update
 //! (`LOAD` included) before the dry run is built, and binds the preview from the same parse.
 //!
 //! The file runs in BOTH builds. Under `--features http-client-probe` (CI's `features:` job)
@@ -287,10 +287,11 @@ fn the_store_door_the_dry_run_uses_refuses_service() {
 /// ikigai-store's exported door checks are the oracle: everything they refuse, this crate's
 /// analysis refuses too, as `InvalidArgument` on `content`. ikigai-nl evaluates nothing, so the
 /// store's `evaluator()` has nothing to wrap here; what it can share is the definition of
-/// "refused", and this pins that the copy of ikigai-script's analysis has not drifted below it.
+/// "refused", and this pins that ikigai-script's analysis, which this crate checks with, has not
+/// drifted below it.
 #[test]
 fn the_analysis_refuses_everything_the_stores_door_checks_refuse() {
-    use ikigai_nl::script_sparql::{analyze, SparqlDoor};
+    use ikigai_script::sparql::{analyze, SparqlDoor};
     use ikigai_store::service::{refuse_load, refuse_service, refuse_service_in_update};
 
     let base = "http://127.0.0.1:9";

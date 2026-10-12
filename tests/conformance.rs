@@ -23,15 +23,15 @@
 //!   caller's own capability, which enforces `urn:cap:script:write:{name}` itself. Under no
 //!   grants the walk's call RESOLVES (an unsaved draft is a legitimate answer) and the
 //!   suite reads that as a mutation; `tests/sparql.rs` pins that nothing was written
-//!   (`an_anonymous_caller_…`, `h.saved` empty).
+//!   (`an_anonymous_caller_…`, `h.saved_names()` empty).
 //! - **`ikigai_nl::space(config)` is HOST-named** (SPACE-NAME): its doors are built from
 //!   the `SpaceConfig` it is handed (the examples, the model doors, the bounds), so only the
 //!   host knows which instance it is, and the space claims no name itself. The suite holds
 //!   it to that: `id()` is `None` and the topology root is anonymous. Naming it would be a
 //!   new public behavior and a wrong claim (one name over doors that vary by config).
 //! - **Everything else in the kernel is opted out**: the store, the vocabulary and the
-//!   script stand-in are here only because the grounding composes them, and the first two
-//!   are conformed by their own crates' suites; the stub model is a test double.
+//!   script host are here only because the grounding composes them, and each is conformed
+//!   by its own crate's suite; the stub model is a test double.
 
 mod common;
 
@@ -40,7 +40,18 @@ use ikigai_conformance::{Check, Fixture, Suite};
 use ikigai_core::Verb;
 use ikigai_nl::{Examples, SpaceConfig};
 
-const COMPOSED: [&str; 3] = ["ikigai-vocab", "script", "script-catalog"];
+/// The vocabulary, and every description id `ikigai_script::space` binds.
+const COMPOSED: [&str; 9] = [
+    "ikigai-vocab",
+    "script",
+    "script-version",
+    "script-compiled",
+    "script-result",
+    "script-runs",
+    "script-run",
+    "script-eval",
+    "script-catalog",
+];
 
 fn config() -> SpaceConfig {
     SpaceConfig::new().examples(Examples::Named(vec!["stale-urgent".to_string()]))
@@ -67,8 +78,7 @@ fn suite() -> Suite {
         suite = suite.opt_out(
             id,
             None,
-            "composed by the grounding; conformed by its own crate (the script stand-in by \
-             ikigai-script's)",
+            "composed by the grounding; conformed by its own crate's suite",
         );
     }
     for id in STORE {

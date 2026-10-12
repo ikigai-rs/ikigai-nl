@@ -3,9 +3,9 @@
 //! The drafter's validation is a resource of its own, so a person editing a draft can ask
 //! the same question the drafter asked, and `urn:nl:script` can reuse it. In order:
 //!
-//! 1. **Bounded and parsed**, by the script host's own analysis (a copy of ikigai-script's
-//!    `sparql::analyze`: the pre-parse nesting bound, the parse, the declared parameters,
-//!    the dataset rules). A draft must be a query (a read), never an update.
+//! 1. **Bounded and parsed**, by the script host's own analysis (`ikigai_script::sparql::
+//!    analyze`: the pre-parse nesting bound, the parse, the declared parameters, the dataset
+//!    rules). A draft must be a query (a read), never an update.
 //! 2. **Authority**: the capability the script host would DERIVE from the graphs the text
 //!    names, against the caller's own. A graph the caller cannot read is refused in the
 //!    same words as a graph that does not exist, so a refusal never says which it was.
@@ -31,11 +31,15 @@ use spargebra::algebra::{GraphPattern, PropertyPathExpression};
 use spargebra::term::{NamedNodePattern, TermPattern, TriplePattern};
 use spargebra::{Query, SparqlParser};
 
+use ikigai_script::limits;
+// The script host's own analysis, the one it runs when a draft is saved: one contract, so
+// what this check passes is what the save accepts (ledger #1244 retired the copy).
+use ikigai_script::sparql::{self as script_sparql, Form, SparqlDoor, Value};
+
 use crate::config::SpaceConfig;
 use crate::gather::{request, ResultTerm, Row};
 use crate::model::{GraphShape, Grounding};
-use crate::script_sparql::{self, Form, SparqlDoor, Value};
-use crate::{limits, GROUNDING_IRI};
+use crate::GROUNDING_IRI;
 
 /// `urn:nl:sparql:check`.
 pub const CHECK_IRI: &str = "urn:nl:sparql:check";
