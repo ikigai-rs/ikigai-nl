@@ -29,9 +29,19 @@
 //!   host knows which instance it is, and the space claims no name itself. The suite holds
 //!   it to that: `id()` is `None` and the topology root is anonymous. Naming it would be a
 //!   new public behavior and a wrong claim (one name over doors that vary by config).
-//! - **Everything else in the kernel is opted out**: the store, the vocabulary and the
-//!   script host are here only because the grounding composes them, and each is conformed
-//!   by its own crate's suite; the stub model is a test double.
+//! - **The walk is scoped to this crate's own endpoints** (`Suite::own("nl-*")`, conformance
+//!   0.8.0): the store, the vocabulary and the script host are here only because the
+//!   grounding composes them, and each is conformed by its own crate's suite; the stub model
+//!   is a test double. They are INHERITED, so no check reads them and no probe fires them, and
+//!   `the_walk_reaches_…` pins that list exactly: an endpoint this crate gains outside `nl-*`
+//!   turns it red instead of joining the pile unseen. (Before 0.8.0 this was a hand partition,
+//!   one `opt_out` per composed id, which still ran the static checks over them.)
+//! - **REQUIRED is not vacuous here**: `nl-sparql-check` declares `content` required (by value,
+//!   no default), so the walk drops it and expects a typed refusal; `a_check_without_…` pins
+//!   the refusal itself. `nl-prompt`'s `name` is a binding and `nl-grounding` requires
+//!   nothing, so they give the check nothing to drop. `Suite::required_on_mutating()` is NOT
+//!   declared: `nl-sparql`, the only mutating action, has no required input (an ask arrives
+//!   by name OR piped, so neither is), and the declaration would reach nothing.
 
 mod common;
 
@@ -40,59 +50,20 @@ use ikigai_conformance::{Check, Fixture, Suite};
 use ikigai_core::Verb;
 use ikigai_nl::{Examples, SpaceConfig};
 
-/// The vocabulary, and every description id `ikigai_script::space` binds.
-const COMPOSED: [&str; 9] = [
+/// Every endpoint the test host binds beside this crate's own: the vocabulary, the script
+/// host's space, the store's space and the stub model.
+const INHERITED: [&str; 24] = [
     "ikigai-vocab",
+    "llm-stub-ask",
+    "llm-stub-select",
     "script",
-    "script-version",
-    "script-compiled",
-    "script-result",
-    "script-runs",
-    "script-run",
-    "script-eval",
     "script-catalog",
-];
-
-fn config() -> SpaceConfig {
-    SpaceConfig::new().examples(Examples::Named(vec!["stale-urgent".to_string()]))
-}
-
-fn suite() -> Suite {
-    let mut suite = Suite::new()
-        .host_named_space("ikigai_nl::space(config)", ikigai_nl::space(config()))
-        .cacheable("nl-grounding")
-        .pure("nl-prompt")
-        .fixture(Fixture::new("nl-sparql", Verb::Sink).arg("content", "the titles of the items"))
-        .opt_out_check(
-            "nl-sparql",
-            Check::Authority,
-            "its one write is the Sink on urn:script:{name} under the caller's own \
-             capability, which enforces urn:cap:script:write:{name}; under no grants it \
-             answers an unsaved draft and writes nothing (tests/sparql.rs pins it)",
-        )
-        .namespace(ikigai_nl::VOID);
-    for id in ["llm-stub-ask", "llm-stub-select"] {
-        suite = suite.opt_out(id, None, "a test double for the host's LLM doors");
-    }
-    for id in COMPOSED {
-        suite = suite.opt_out(
-            id,
-            None,
-            "composed by the grounding; conformed by its own crate's suite",
-        );
-    }
-    for id in STORE {
-        suite = suite.opt_out(
-            id,
-            None,
-            "composed by the grounding; ikigai-store's own suite conforms it",
-        );
-    }
-    suite
-}
-
-/// Every description id `ikigai_store::space` binds.
-const STORE: [&str; 13] = [
+    "script-compiled",
+    "script-eval",
+    "script-result",
+    "script-run",
+    "script-runs",
+    "script-version",
     "store-ask",
     "store-construct",
     "store-describe",
@@ -107,6 +78,27 @@ const STORE: [&str; 13] = [
     "store-select",
     "store-update",
 ];
+
+fn config() -> SpaceConfig {
+    SpaceConfig::new().examples(Examples::Named(vec!["stale-urgent".to_string()]))
+}
+
+fn suite() -> Suite {
+    Suite::new()
+        .own("nl-*")
+        .host_named_space("ikigai_nl::space(config)", ikigai_nl::space(config()))
+        .cacheable("nl-grounding")
+        .pure("nl-prompt")
+        .fixture(Fixture::new("nl-sparql", Verb::Sink).arg("content", "the titles of the items"))
+        .opt_out_check(
+            "nl-sparql",
+            Check::Authority,
+            "its one write is the Sink on urn:script:{name} under the caller's own \
+             capability, which enforces urn:cap:script:write:{name}; under no grants it \
+             answers an unsaved draft and writes nothing (tests/sparql.rs pins it)",
+        )
+        .namespace(ikigai_nl::VOID)
+}
 
 fn kernel() -> ikigai_core::Kernel {
     host(config())
@@ -124,12 +116,18 @@ fn conforms() {
 #[test]
 fn the_walk_reaches_the_grounding_and_probes_its_turtle() {
     let report = suite().run_blocking(&kernel());
-    for id in ["nl-grounding", "nl-sparql", "nl-sparql-check", "nl-prompt"] {
-        assert!(
-            report.walked.iter().any(|w| w == id),
-            "{id} not walked:\n{report}"
-        );
-    }
+    let mut walked = report.walked.to_vec();
+    walked.sort();
+    assert_eq!(
+        walked,
+        ["nl-grounding", "nl-prompt", "nl-sparql", "nl-sparql-check"],
+        "{report}"
+    );
+    // The rest, EXACTLY: what `own` leaves out is named, so a new endpoint outside `nl-*`
+    // (or a composed one that stops being bound) turns this red.
+    let mut inherited = report.declared.inherited.clone();
+    inherited.sort();
+    assert_eq!(inherited, INHERITED, "{report}");
     let text = report.to_string();
     assert!(
         text.lines()
@@ -147,4 +145,23 @@ fn the_walk_reaches_the_grounding_and_probes_its_turtle() {
         .and_then(|n| n.parse().ok())
         .unwrap_or_else(|| panic!("{probed}"));
     assert!(triples > 1000, "{probed}");
+}
+
+/// What REQUIRED asks of `nl-sparql-check`, pinned where it can be read: the query is its one
+/// required input, and a check without it is refused as a missing argument, typed, never
+/// answered as a check of nothing.
+#[test]
+fn a_check_without_its_query_is_refused_as_a_missing_argument() {
+    let refused = issue(
+        &kernel(),
+        Verb::Source,
+        "urn:nl:sparql:check",
+        &[],
+        &ikigai_core::Capability::root(),
+    )
+    .unwrap_err();
+    assert!(
+        matches!(refused, ikigai_core::Error::MissingArgument(ref n) if n == "content"),
+        "{refused}"
+    );
 }
