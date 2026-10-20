@@ -91,14 +91,17 @@ futures = "0.3"
 # really reaches a local stub, and the line `http-client-probe` turns the client on through.
 # The store's own line, `0.5.1` (its security floor), so the two unify. ⚠ `<0.6.0`.
 oxigraph = { version = "0.5.1", default-features = false }
-# The module recipe as one test. 0.8.0 is the CURRENT definition of "done" (the newest on
-# crates.io): it adds REQUIRED and `Suite::own`, which `tests/conformance.rs` uses to scope
-# the walk to this crate's own `nl-*` endpoints (0.6.0 brought SPACE-NAME, 0.7.0 VALIDATE).
-# Its own floor is ikigai-core 0.1.100, above this crate's 0.1.91, so the TEST graph
-# resolves 0.1.100; the `[dependencies]` pin above stays the LIBRARY's true minimum and is
-# not raised for the suite. ⚠ `"0.8.0"` is `<0.9.0`: raise it when conformance moves, or
-# this crate keeps reporting green against an old rulebook.
-ikigai-conformance = "0.8.0"
+# The module recipe as one test. 0.10.0 is the CURRENT definition of "done": 0.9.0 added
+# core 0.1.105's contract-shape checks (REQUIRED probes input groups, OUTPUTS honors
+# `output_from`, PIPELINE's named-only line, VALIDATE refuses a default on a binding) and
+# RECOMPUTE; 0.10.0 adds FAILURES, OFF unless a suite opts in (`Suite::check_failures()`,
+# not turned on here). Earlier: 0.8.0's `Suite::own`, which `tests/conformance.rs` uses to
+# scope the walk to this crate's own `nl-*` endpoints. Its own floor is ikigai-core 0.1.108,
+# above this crate's 0.1.91, so the TEST graph resolves 0.1.108; the `[dependencies]` pin
+# above stays the LIBRARY's true minimum and is not raised for the suite. ⚠ `"0.10.0"` is a
+# RANGE, `<0.11.0`: raise it when conformance moves, or this crate keeps reporting green
+# against an old rulebook.
+ikigai-conformance = "0.10.0"
 # The store the graphs part reads, in memory, as a host would mount it. 0.2.5 is where
 # `urn:iki:store:graphs` and several-graph scoped reads arrive. 0.2.10 is the TRUE floor now:
 # from it every door the dry run reaches refuses `SERVICE` before evaluation, and
