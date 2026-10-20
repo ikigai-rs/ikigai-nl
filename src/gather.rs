@@ -200,6 +200,7 @@ pub(crate) async fn actions(inv: &Invocation<'_>, manifold: &Manifold) -> Result
                     })
                     .collect(),
                 outputs: spec.outputs.clone(),
+                spec: Some(spec),
             });
         }
     }

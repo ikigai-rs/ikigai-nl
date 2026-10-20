@@ -218,7 +218,9 @@ fn part<T>(g: &mut Graph, root: &str, name: &str, part: &Part<T>) -> String {
 /// row (`ik:ActionMatch`, where to invoke it, `ik:contract`), and its contract node as the
 /// catalog writes it (`ikigai_vocab::to_turtle` over a description holding only this verb).
 ///
-/// The rebuilt description carries every field `ActionSpec::contract_id` reads (summary,
+/// An action gathered from core carries its `ActionSpec` whole, so the node is core's own.
+/// Without it (an `Action` read back from JSON) the description is rebuilt, and carries
+/// every field `ActionSpec::contract_id` read before 0.1.105 (summary,
 /// each input's name, summary, required, source, class, default and `one_of`, the
 /// outputs, the scopes) and the endpoint id, so the node `to_turtle` writes is the one
 /// `action.contract` names, digest for digest: the rebuild loses nothing the hash covers.
@@ -231,22 +233,26 @@ fn render_action(g: &mut Graph, action: &Action) {
         _ => Verb::Source,
     };
     let mut spec = ActionSpec::new(verb).summary(&action.action_summary);
-    for input in &action.inputs {
-        let mut arg = ArgSpec::new(&input.name).summary(&input.summary);
-        arg.required = input.required;
-        arg.class = input.class.clone();
-        arg.default = input.default.clone();
-        arg.one_of = input.one_of.clone();
-        if input.binding {
-            arg.source = InputSource::Binding;
+    if let Some(described) = &action.spec {
+        spec = described.clone();
+    } else {
+        for input in &action.inputs {
+            let mut arg = ArgSpec::new(&input.name).summary(&input.summary);
+            arg.required = input.required;
+            arg.class = input.class.clone();
+            arg.default = input.default.clone();
+            arg.one_of = input.one_of.clone();
+            if input.binding {
+                arg.source = InputSource::Binding;
+            }
+            spec = spec.input(arg);
         }
-        spec = spec.input(arg);
-    }
-    for output in &action.outputs {
-        spec = spec.output(output);
-    }
-    for scope in &action.requires {
-        spec = spec.requires(scope);
+        for output in &action.outputs {
+            spec = spec.output(output);
+        }
+        for scope in &action.requires {
+            spec = spec.requires(scope);
+        }
     }
     let description = Description::new(&action.id)
         .title(&action.title)

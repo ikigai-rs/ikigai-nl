@@ -123,6 +123,13 @@ pub struct Action {
     pub inputs: Vec<Input>,
     /// The media types it can answer.
     pub outputs: Vec<String>,
+    /// The contract exactly as core describes it, kept so the Turtle face states the node
+    /// whose digest `contract` names. The fields above are the flat reading of it and omit
+    /// what core's hash also covers (input groups, open arguments, `output_from`, failures:
+    /// core 0.1.105 and after). Not part of the JSON face; an `Action` read back from JSON
+    /// has none, and its Turtle is rebuilt from the flat fields.
+    #[serde(skip)]
+    pub(crate) spec: Option<ikigai_core::ActionSpec>,
 }
 
 /// One declared argument.
