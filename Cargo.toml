@@ -107,5 +107,7 @@ ikigai-conformance = "0.10.0"
 # from it every door the dry run reaches refuses `SERVICE` before evaluation, and
 # `ikigai_store::service`'s door checks exist, which `tests/service_egress.rs` uses as the
 # oracle this crate's own refusal must cover (ledger #1085). On 0.2.7 the dry run's door
-# fetched a `SERVICE` in a build with `oxigraph/http-client` on. ⚠ `"0.2.10"` is `<0.3.0`.
-ikigai-store = "0.2.10"
+# fetched a `SERVICE` in a build with `oxigraph/http-client` on. 0.2.24 is the floor of the INHERITED
+# list in `tests/conformance.rs`: it adds `store-graph-info` and `store-dump`, which the exact list names.
+# ⚠ `"0.2.24"` is `<0.3.0`.
+ikigai-store = "0.2.24"
