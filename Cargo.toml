@@ -81,9 +81,9 @@ futures = "0.3"
 # really reaches a local stub, and the line `http-client-probe` turns the client on through.
 # The store's own line, `0.5.1` (its security floor), so the two unify. ⚠ `<0.6.0`.
 oxigraph = { version = "0.5.1", default-features = false }
-# The module recipe as one test. 0.11.0 uses core 0.2.x and enables DATATYPES
-# and FAILURES by default; the walk remains scoped to this crate's endpoints.
-ikigai-conformance = "0.11.0"
+# The module recipe as one test. 0.12.0 enables BODIES and BODY-INPUTS by default;
+# the walk remains scoped to this crate's endpoints.
+ikigai-conformance = "0.12.0"
 # The store the graphs part reads, in memory, as a host would mount it. 0.2.5 is where
 # `urn:iki:store:graphs` and several-graph scoped reads arrive. 0.2.10 is the TRUE floor now:
 # from it every door the dry run reaches refuses `SERVICE` before evaluation, and
