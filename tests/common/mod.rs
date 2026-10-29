@@ -277,6 +277,8 @@ fn llm(stub: Arc<Mutex<Stub>>) -> EndpointSpace {
 /// A test host and what its doubles recorded.
 pub struct Host {
     pub kernel: Kernel,
+    /// The same shared root used by the kernel, for direct conformance body probes.
+    pub space: Arc<dyn Space>,
     pub stub: Arc<Mutex<Stub>>,
     /// The script host's backend, read directly to see what a Sink kept.
     pub backend: Arc<MemoryBackend>,
@@ -336,9 +338,10 @@ pub fn drafting_host_over(
         calls: Vec::new(),
     }));
     let backend = Arc::new(MemoryBackend::new());
-    let kernel = kernel(config, stub.clone(), backend.clone(), store);
+    let (kernel, space) = kernel(config, stub.clone(), backend.clone(), store);
     Host {
         kernel,
+        space,
         stub,
         backend,
     }
@@ -355,7 +358,7 @@ fn kernel(
     stub: Arc<Mutex<Stub>>,
     backend: Arc<MemoryBackend>,
     store: DurableStore,
-) -> Kernel {
+) -> (Kernel, Arc<dyn Space>) {
     let root = Fallback::new(vec![
         Arc::new(ikigai_nl::space(config)) as Arc<dyn Space>,
         Arc::new(store_space(store)) as Arc<dyn Space>,
@@ -363,7 +366,8 @@ fn kernel(
         Arc::new(scripts(backend)) as Arc<dyn Space>,
         Arc::new(llm(stub)) as Arc<dyn Space>,
     ]);
-    let kernel = Kernel::with_meta_renderer(Arc::new(root), Arc::new(ikigai_vocab::TurtleRenderer));
+    let space: Arc<dyn Space> = Arc::new(root);
+    let kernel = Kernel::with_meta_renderer(space.clone(), Arc::new(ikigai_vocab::TurtleRenderer));
     issue(
         &kernel,
         Verb::Sink,
@@ -387,7 +391,7 @@ fn kernel(
         )
         .unwrap_or_else(|e| panic!("publishing {}: {e}", script.name));
     }
-    kernel
+    (kernel, space)
 }
 
 pub fn issue(

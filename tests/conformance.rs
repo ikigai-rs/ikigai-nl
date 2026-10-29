@@ -4,6 +4,12 @@
 //!
 //! # What the suite is told, and why
 //!
+//! - **Body probes share the kernel's root space** so BODIES compares the actual
+//!   endpoints. No module argument declares `reads_body`, so BODY-INPUTS has no inputs
+//!   to compare. `nothing_unprobed` keeps deterministic coverage from silently falling off.
+//!   Grounding's BODIES waiver covers the suite's root-to-scoped capability change;
+//!   `grounding_body_budget_preserves_the_callers_authority` pins the actual budget contract.
+//!
 //! - **`nl-grounding` is `cacheable`.** With configured examples every part is cacheable,
 //!   so the composite must come back cached and carry its parts' threads. (With the
 //!   default, the live script catalog, it is live by construction; `tests/grounding.rs`
@@ -46,7 +52,7 @@
 mod common;
 
 use common::*;
-use ikigai_conformance::{Check, Fixture, Suite};
+use ikigai_conformance::{Check, Expected, Fixture, Suite};
 use ikigai_core::Verb;
 use ikigai_nl::{Examples, SpaceConfig};
 
@@ -85,11 +91,21 @@ fn config() -> SpaceConfig {
     SpaceConfig::new().examples(Examples::Named(vec!["stale-urgent".to_string()]))
 }
 
-fn suite() -> Suite {
+fn suite(space: std::sync::Arc<dyn ikigai_core::Space>) -> Suite {
     Suite::new()
+        .body_space(space)
         .own("nl-*")
         .host_named_space("ikigai_nl::space(config)", ikigai_nl::space(config()))
         .cacheable("nl-grounding")
+        .opt_out_check(
+            "nl-grounding",
+            Check::Bodies,
+            "conformance 0.12.0 replaces root with scoped declared requirements plus a memory \
+             grant for the bounded call; grounding is authority-dependent, so that caller \
+             legitimately receives a smaller complete answer, not truncation. \
+             grounding_body_budget_preserves_the_callers_authority proves complete scoped \
+             bytes and OverBudget under the original root caller",
+        )
         .pure("nl-prompt")
         .fixture(Fixture::new("nl-sparql", Verb::Sink).arg("content", "the titles of the items"))
         .opt_out_check(
@@ -108,16 +124,18 @@ fn kernel() -> ikigai_core::Kernel {
 
 #[test]
 fn conforms() {
-    let report = suite().run_blocking(&kernel());
+    let h = drafting_host(config(), &[]);
+    let report = suite(h.space).run_blocking(&h.kernel);
     println!("{report}");
-    assert!(report.is_clean(), "{report}");
+    report.assert_clean_with(&Expected::new().nothing_unprobed());
 }
 
 /// ★ The positive half: a clean report over a walk that reached nothing would read exactly
 /// like a clean report over a walk that reached everything.
 #[test]
 fn the_walk_reaches_the_grounding_and_probes_its_turtle() {
-    let report = suite().run_blocking(&kernel());
+    let h = drafting_host(config(), &[]);
+    let report = suite(h.space).run_blocking(&h.kernel);
     let mut walked = report.walked.to_vec();
     walked.sort();
     assert_eq!(
@@ -166,4 +184,55 @@ fn a_check_without_its_query_is_refused_as_a_missing_argument() {
         matches!(refused, ikigai_core::Error::MissingArgument(ref n) if n == "content"),
         "{refused}"
     );
+}
+
+/// BODIES 0.12.0 changes root into a scoped caller for its bounded request. Grounding
+/// intentionally changes with authority; prove that its shorter answer is complete,
+/// while a smaller budget under the original caller really does fail.
+#[test]
+fn grounding_body_budget_preserves_the_callers_authority() {
+    use futures::executor::block_on;
+    use ikigai_core::{cap_stream_memory, Capability, Error, Iri, IssueContext, Request};
+
+    let kernel = kernel();
+    let request = Request::new(Verb::Source, Iri::parse("urn:nl:grounding").unwrap());
+    let root = Capability::root();
+    let full = block_on(kernel.issue(request.clone(), &root)).unwrap();
+    let bound = full.bytes.len() - 1;
+    kernel.cut("urn:nl:grounding");
+    let limited = block_on(kernel.issue_body_with_context(
+        request.clone(),
+        &root,
+        IssueContext::new().with_memory_limit(bound as u64),
+    ));
+    let collected = block_on(async { limited?.collect(bound).await });
+    assert!(
+        matches!(collected, Err(Error::OverBudget { .. })),
+        "{collected:?}"
+    );
+
+    let scoped = Capability::scoped([cap_stream_memory(bound as u64)]);
+    let complete = block_on(kernel.issue(request.clone(), &scoped)).unwrap();
+    kernel.cut("urn:nl:grounding");
+    let bounded = block_on(async {
+        kernel
+            .issue_body_with_context(
+                request,
+                &scoped,
+                IssueContext::new().with_memory_limit(bound as u64),
+            )
+            .await?
+            .collect(bound)
+            .await
+    })
+    .unwrap();
+    println!(
+        "root: {} bytes; scoped complete: {} bytes; scoped bounded: {} bytes",
+        full.bytes.len(),
+        complete.bytes.len(),
+        bounded.bytes.len()
+    );
+    assert!(complete.bytes.len() < bound);
+    assert_eq!(complete.bytes, bounded.bytes);
+    assert_eq!(complete.repr_type, bounded.repr_type);
 }
