@@ -363,6 +363,10 @@ stated.
 - **Per-graph invalidation.** The store hangs every read from its three write threads,
   not from the graph it read, so a write to any graph re-queries every graph's shape.
 
+## Accessibility
+
+What this crate writes that people read, what of it is a model's text rather than this crate's, the rules its own text follows, how it is tested and its known limitations are in [ACCESSIBILITY.md](ACCESSIBILITY.md). Report a barrier with an issue carrying the `accessibility` label.
+
 ## License
 
 MIT OR Apache-2.0.
