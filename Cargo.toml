@@ -1,6 +1,6 @@
 [package]
 name = "ikigai-nl"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2021"
 # The toolchain the shared CI's msrv job builds and tests on: the line the ecosystem's
 # other declared crates hold. MEASURED, not assumed: `cargo +1.89 clippy --all-targets`
@@ -17,12 +17,12 @@ keywords = ["ikigai", "roc", "llm", "grounding", "module"]
 categories = ["development-tools"]
 
 [dependencies]
-# 0.2.0 is the streams release (ledger #2261). The old 0.1 pin meant
-# <0.2.0 under 0.x rules; these caret floors admit compatible 0.2.x patches.
+# Core 0.3.0 scopes held content to its delivering principal and makes unscoped
+# content-store writes root-only (ledger #2965). Keep vocab on the same core line.
 # Core supplies the action identities and contracts; vocab renders their Turtle
 # and defines the grounding and drafting terms.
-ikigai-core = "0.2.0"
-ikigai-vocab = "0.2.0"
+ikigai-core = "0.3.0"
+ikigai-vocab = "0.3.0"
 # `Endpoint::invoke` is `async_trait`, and the grounding endpoint carries its config.
 async-trait = "0.1"
 # The JSON face, and reading the JSON faces of what it composes (descriptions, SPARQL
@@ -54,9 +54,9 @@ spargebra = "0.4.7"
 # `authority::holds`, never of `Capability::allows`: a grant names one script or a NAMESPACE
 # of them (`urn:cap:script:read:team-*`), and an exclusion takes a script back out, so an
 # exact match disagrees with the host both ways (ledger #1196). 0.3.0 is the TRUE floor:
-# namespace grants and `holds` arrived there (ledger #1174). 0.4.0 moves the
-# host onto core 0.2.x, shared with this crate.
-ikigai-script = "0.4.0"
+# namespace grants and `holds` arrived there (ledger #1174). 0.5.0 moves the
+# host onto core 0.3.x, shared with this crate.
+ikigai-script = "0.5.0"
 
 # oxrdf pulls getrandom 0.3 (through rand, for blank-node ids this crate never mints), and
 # getrandom refuses to compile for wasm32-unknown-unknown until a backend is named. The
@@ -82,8 +82,8 @@ futures = "0.3"
 # The store's own line, `0.5.1` (its security floor), so the two unify. ⚠ `<0.6.0`.
 oxigraph = { version = "0.5.1", default-features = false }
 # The module recipe as one test. 0.12.0 enables BODIES and BODY-INPUTS by default;
-# the walk remains scoped to this crate's endpoints.
-ikigai-conformance = "0.12.0"
+# the walk remains scoped to this crate's endpoints. 0.14.0 shares core 0.3.x.
+ikigai-conformance = "0.14.0"
 # The store the graphs part reads, in memory, as a host would mount it. 0.2.5 is where
 # `urn:iki:store:graphs` and several-graph scoped reads arrive. 0.2.10 is the TRUE floor now:
 # from it every door the dry run reaches refuses `SERVICE` before evaluation, and
@@ -91,5 +91,5 @@ ikigai-conformance = "0.12.0"
 # oracle this crate's own refusal must cover (ledger #1085). On 0.2.7 the dry run's door
 # fetched a `SERVICE` in a build with `oxigraph/http-client` on. 0.2.24 is the floor of the INHERITED
 # list in `tests/conformance.rs`: it adds `store-graph-info` and `store-dump`, which the exact list names.
-# 0.3.1 is the latest release and shares core 0.2.x with this crate.
-ikigai-store = "0.3.1"
+# 0.4.0 shares core 0.3.x with this crate.
+ikigai-store = "0.4.0"
