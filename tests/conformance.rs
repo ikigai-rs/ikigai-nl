@@ -58,7 +58,7 @@ use ikigai_nl::{Examples, SpaceConfig};
 
 /// Every endpoint the test host binds beside this crate's own: the vocabulary, the script
 /// host's space, the store's space and the stub model.
-const INHERITED: [&str; 26] = [
+const INHERITED: [&str; 27] = [
     "ikigai-vocab",
     "llm-stub-ask",
     "llm-stub-select",
@@ -80,6 +80,7 @@ const INHERITED: [&str; 26] = [
     "store-graph-info",
     "store-graph-select",
     "store-graph-update",
+    "store-graph-written",
     "store-graphs",
     "store-info",
     "store-load",

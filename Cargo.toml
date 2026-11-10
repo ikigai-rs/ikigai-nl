@@ -91,5 +91,6 @@ ikigai-conformance = "0.14.0"
 # oracle this crate's own refusal must cover (ledger #1085). On 0.2.7 the dry run's door
 # fetched a `SERVICE` in a build with `oxigraph/http-client` on. 0.2.24 is the floor of the INHERITED
 # list in `tests/conformance.rs`: it adds `store-graph-info` and `store-dump`, which the exact list names.
-# 0.4.0 shares core 0.3.x with this crate.
-ikigai-store = "0.4.0"
+# 0.5.0 adds `store-graph-written` to that inherited list and shares core 0.3.x.
+# This remains a dev-dependency: only test hosts mount the store. "0.5.0" is <0.6.0.
+ikigai-store = "0.5.0"
