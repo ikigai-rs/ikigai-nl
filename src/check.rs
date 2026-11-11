@@ -32,7 +32,9 @@ use ikigai_core::{
     Invocation, ReprType, Representation, Result, Verb,
 };
 use serde::{Deserialize, Serialize};
-use spargebra::algebra::{GraphPattern, PropertyPathExpression};
+use spargebra::algebra::{
+    AggregateExpression, Expression, GraphPattern, OrderExpression, PropertyPathExpression,
+};
 use spargebra::term::{NamedNodePattern, TermPattern, TriplePattern};
 use spargebra::{Query, SparqlParser};
 
@@ -780,9 +782,10 @@ fn limited(text: &str, rows: usize) -> Result<String> {
 
 /// The predicates and classes a query names in its WHERE patterns.
 ///
-/// Not walked: a CONSTRUCT template (what it writes, not what it reads), `FILTER EXISTS`
-/// patterns, a negated property set, and IRIs in expressions or in subject and object
-/// positions (instances, which the grounding samples but does not list).
+/// Expressions are walked for EXISTS patterns, including nested expressions and
+/// aggregates. Not checked: a CONSTRUCT template (what it writes, not what it reads),
+/// and IRIs in expression values or subject and object positions (instances, which the
+/// grounding samples but does not list).
 #[derive(Default)]
 struct Named {
     predicates: BTreeSet<String>,
@@ -829,7 +832,54 @@ impl Named {
                 self.path(a);
                 self.path(b);
             }
-            PropertyPathExpression::NegatedPropertySet(_) => {}
+            PropertyPathExpression::NegatedPropertySet(nodes) => {
+                self.predicates
+                    .extend(nodes.iter().map(|n| n.as_str().to_string()));
+            }
+        }
+    }
+
+    fn expression(&mut self, expression: &Expression) {
+        match expression {
+            Expression::Exists(pattern) => self.pattern(pattern),
+            Expression::Or(a, b)
+            | Expression::And(a, b)
+            | Expression::Equal(a, b)
+            | Expression::SameTerm(a, b)
+            | Expression::Greater(a, b)
+            | Expression::GreaterOrEqual(a, b)
+            | Expression::Less(a, b)
+            | Expression::LessOrEqual(a, b)
+            | Expression::Add(a, b)
+            | Expression::Subtract(a, b)
+            | Expression::Multiply(a, b)
+            | Expression::Divide(a, b) => {
+                self.expression(a);
+                self.expression(b);
+            }
+            Expression::In(a, rest) => {
+                self.expression(a);
+                for expr in rest {
+                    self.expression(expr);
+                }
+            }
+            Expression::UnaryPlus(expr) | Expression::UnaryMinus(expr) | Expression::Not(expr) => {
+                self.expression(expr)
+            }
+            Expression::If(a, b, c) => {
+                self.expression(a);
+                self.expression(b);
+                self.expression(c);
+            }
+            Expression::Coalesce(args) | Expression::FunctionCall(_, args) => {
+                for expr in args {
+                    self.expression(expr);
+                }
+            }
+            Expression::NamedNode(_)
+            | Expression::Literal(_)
+            | Expression::Variable(_)
+            | Expression::Bound(_) => {}
         }
     }
 
@@ -843,20 +893,52 @@ impl Named {
             GraphPattern::Path { path, .. } => self.path(path),
             GraphPattern::Join { left, right }
             | GraphPattern::Union { left, right }
-            | GraphPattern::Minus { left, right }
-            | GraphPattern::LeftJoin { left, right, .. } => {
+            | GraphPattern::Minus { left, right } => {
                 self.pattern(left);
                 self.pattern(right);
             }
-            GraphPattern::Filter { inner, .. }
-            | GraphPattern::Graph { inner, .. }
-            | GraphPattern::Extend { inner, .. }
-            | GraphPattern::OrderBy { inner, .. }
+            GraphPattern::LeftJoin {
+                left,
+                right,
+                expression,
+            } => {
+                self.pattern(left);
+                self.pattern(right);
+                if let Some(expression) = expression {
+                    self.expression(expression);
+                }
+            }
+            GraphPattern::Filter { inner, expr }
+            | GraphPattern::Extend {
+                inner,
+                expression: expr,
+                ..
+            } => {
+                self.pattern(inner);
+                self.expression(expr);
+            }
+            GraphPattern::OrderBy { inner, expression } => {
+                self.pattern(inner);
+                for order in expression {
+                    let (OrderExpression::Asc(expr) | OrderExpression::Desc(expr)) = order;
+                    self.expression(expr);
+                }
+            }
+            GraphPattern::Group {
+                inner, aggregates, ..
+            } => {
+                self.pattern(inner);
+                for (_, aggregate) in aggregates {
+                    if let AggregateExpression::FunctionCall { expr, .. } = aggregate {
+                        self.expression(expr);
+                    }
+                }
+            }
+            GraphPattern::Graph { inner, .. }
             | GraphPattern::Project { inner, .. }
             | GraphPattern::Distinct { inner }
             | GraphPattern::Reduced { inner }
             | GraphPattern::Slice { inner, .. }
-            | GraphPattern::Group { inner, .. }
             | GraphPattern::Service { inner, .. } => self.pattern(inner),
             // VALUES names no predicate; LATERAL (a feature a sibling's build may unify in)
             // is refused by the analysis before this walk is reached.
@@ -891,15 +973,16 @@ pub(crate) fn optional<'a>(inv: &'a Invocation<'_>, name: &str) -> Result<Option
 
 /// A count argument: absent is `default`; present must be a whole number up to `max`.
 pub(crate) fn count(inv: &Invocation<'_>, name: &str, default: usize, max: usize) -> Result<usize> {
-    match optional(inv, name)? {
-        None => Ok(default.min(max)),
-        Some(text) => match text.parse::<usize>() {
-            Ok(n) if n <= max => Ok(n),
-            _ => Err(Error::InvalidArgument {
-                name: name.to_string(),
-                detail: format!("`{text}` is not a whole number from 0 to {max}"),
-            }),
-        },
+    if !inv.request.args.contains_key(name) {
+        return Ok(default.min(max));
+    }
+    let text = optional(inv, name)?.unwrap_or_default();
+    match text.parse::<usize>() {
+        Ok(n) if n <= max => Ok(n),
+        _ => Err(Error::InvalidArgument {
+            name: name.to_string(),
+            detail: format!("`{text}` is not a whole number from 0 to {max}"),
+        }),
     }
 }
 

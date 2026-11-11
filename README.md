@@ -349,8 +349,9 @@ stated.
   focus drops, so it can ask for `parts=actions` unfocused beside a focused read of the
   rest.
 - **A measured repair bound.** See above: 3 is a cost bound.
-- **IRIs beyond predicates and classes.** The check does not judge instance IRIs, IRIs in
-  expressions, `FILTER EXISTS` patterns or a CONSTRUCT template.
+- **IRIs beyond predicates and classes.** The check does not judge instance IRIs, IRI
+  values in expressions or a CONSTRUCT template. It does check predicates and classes
+  in `EXISTS` patterns within expressions, and predicates in negated property paths.
 - **Value kinds in Turtle.** A predicate's value kinds and closed-set values are in the
   JSON face and the drafting prompt; the Turtle face does not state them, because no term
   for them exists yet: VoID has none, and an `ik:` term is a vocabulary change.
