@@ -11,7 +11,7 @@ conformance claim. Adapted from the
 | Status | Evaluation in progress. No conformance claim. |
 | Owner | the maintainers of this repository |
 | Report a barrier | [a GitHub issue](https://github.com/ikigai-rs/ikigai-nl/issues/new?labels=accessibility) with the `accessibility` label; anything security-sensitive through [private vulnerability reporting](https://github.com/ikigai-rs/ikigai-nl/security/advisories/new) |
-| Last reviewed | 2026-10-31 |
+| Last reviewed | 2026-11-12 |
 
 ## What it emits that people read
 
@@ -52,22 +52,43 @@ in.
 
 ## How it is tested
 
-- `tests/sparql.rs`: `a_draft_that_never_validates_comes_back_failed_with_every_attempt` (the
-  answer starts `no valid draft`), `the_check_is_a_resource_of_its_own` (`preview (LIMIT 5)`),
-  `a_draft_reaching_a_graph_the_caller_cannot_read_is_refused_without_leaking_it`.
-- `tests/drafting.rs`: `a_repeat_says_drafting_stopped_and_is_recorded_as_a_repeat_not_a_failure`
-  (the first line says `drafting stopped: the model repeated attempt 1`),
-  `a_draft_still_empty_after_the_last_attempt_is_saved_marked_never_silently`.
-- **No automated accessibility checker, browser or assistive technology has been used on this
-  output.**
+Every named check has a result: Pass, Fail or Blocked, with evidence. A Pass covers only
+that check, not overall accessibility. On 2026-11-12, `cargo test --test sparql --test drafting`
+passed all 25 tests on main at `e48040033e3a403d256c01bb3e5b7cf2b2f7db3e`, before this
+documentation change, using Cargo 1.99.0 and rustc 1.99.0. The five checks below ran as part of
+that command; CI repeats those suites through the shared Rust workflow in
+`.github/workflows/ci.yml`. These are assertions on library output and behavior, not browser
+or assistive-technology evaluations. They do not assess the model's words, the caller's data,
+a host's presentation, or overall WCAG 2.2 AA conformance.
+
+| Check | Result | Evidence |
+|---|---|---|
+| Failed drafting says what happened and lists every attempt | Pass | `tests/sparql.rs`: `a_draft_that_never_validates_comes_back_failed_with_every_attempt`, run with the command and versions above. Asserts `no valid draft` at the start and three attempt sections; does not assess how understandable each error is. |
+| Check output names its form and preview limit | Pass | `tests/sparql.rs`: `the_check_is_a_resource_of_its_own`, same run. Asserts `valid select over` and `preview (LIMIT 5)`; does not assess table reading order or alignment. |
+| Draft reaching an unreadable graph is refused without leaking its content | Pass | `tests/sparql.rs`: `a_draft_reaching_a_graph_the_caller_cannot_read_is_refused_without_leaking_it`, same run. Checks refusal, no save and no graph content reaching the model; does not establish that every refusal is equally understandable. |
+| Repeated attempt is explained on the first line | Pass | `tests/drafting.rs`: `a_repeat_says_drafting_stopped_and_is_recorded_as_a_repeat_not_a_failure`, same run. Asserts `drafting stopped: the model repeated attempt 1` on the first line and records the repeat in JSON and Turtle. |
+| Saved draft with an empty preview says so on the first line | Pass | `tests/drafting.rs`: `a_draft_still_empty_after_the_last_attempt_is_saved_marked_never_silently`, same run. Asserts `preview is EMPTY` on the first line and a provenance warning; does not assess spoken pronunciation. |
+| Automated accessibility checker | Blocked | No automated accessibility checker was run for this review; no host page or browser checker is configured here. Rust tests are not an accessibility checker. |
+| Browser presentation, zoom, reflow and contrast | Blocked | No browser evaluation was run for this review. This library emits text, JSON and Turtle; a host presentation and browser session are needed to evaluate their rendering. |
+| Manual keyboard | Blocked | No person performed a keyboard pass for this review; no interactive host session was available. |
+| Screen reader | Blocked | No screen reader was used for this review; no screen reader session was available. The preview limitation below is a source observation, not a screen reader test result. |
+| Screen magnifier | Blocked | No screen magnifier was used for this review; no magnifier session was available. |
+| Speech input | Blocked | No speech-input software was used for this review; no speech-input session was available. |
+| Switch access | Blocked | No switch-access software was used for this review; no switch-access session was available. |
+| Braille display | Blocked | No braille display was used for this review; no braille display was available. |
+
+Unrun checks remain Blocked. A historical run that CI does not repeat must also be recorded
+as Blocked with its date and missing current evidence, rather than carried forward as Pass.
 
 ## Known limitations
 
-Found by reading the source on 2026-10-31:
+Observed in the source on 2026-10-31 and reviewed again on 2026-11-12; these are
+limitations, not measured assistive-technology results:
 
 - The preview is a tab-separated table with no alignment, and its values are written as RDF
-  terms (`<urn:…>`, `"first"`), so a screen reader reads the brackets and quotes and a sighted
-  reader sees ragged columns.
+  terms (`<urn:…>`, `"first"`), which may make columns and RDF punctuation difficult to follow.
+  `Preview::to_text` in `src/check.rs` joins columns with tabs; no screen reader was used
+  to establish how it speaks them.
 - A saved draft's first line opens with a long version IRI (a sha256 digest) before the words
   that say it is a draft.
 - Some failures name a wire detail rather than what to do (`… did not answer its JSON form: …`,
@@ -79,8 +100,10 @@ Found by reading the source on 2026-10-31:
 
 Read this file before changing any output listed above: the plain answers, the prompts or the
 refusals. Keep meaning in words, keep the first line saying what happened, and keep the model's
-text separate from this crate's. Say in the pull request what was tested, with what, and what
-was not.
+text separate from this crate's. In the pull request's Accessibility section, give each check
+a row in a `Check | Result | Evidence` table: Pass, Fail or Blocked, with the test or command,
+tool and version used, or why it could not run. Keep unrun checks as Blocked, including
+assistive technologies nobody used.
 
 ## Reporting a barrier
 
@@ -96,3 +119,4 @@ technology, if you are comfortable sharing them. Anything security-sensitive goe
 | Date | Change |
 |---|---|
 | 2026-10-31 | First version. |
+| 2026-11-12 | Record current output tests and blocked browser and assistive-technology checks with evidence and scope. |
