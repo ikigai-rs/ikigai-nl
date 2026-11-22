@@ -398,10 +398,13 @@ async fn fill(
     } else if manifold.offers(SELECT_IRI, "source") {
         SELECT_IRI
     } else {
-        return Err(Error::Denied(format!(
-            "the store lists {graph} as readable, but neither {GRAPH_SELECT_IRI} with its \
+        return Err(Error::Denied(
+            format!(
+                "the store lists {graph} as readable, but neither {GRAPH_SELECT_IRI} with its \
              grant nor {SELECT_IRI} is offered to this capability"
-        )));
+            )
+            .into(),
+        ));
     };
     // The graph reaches the query as a typed value through the store's `bindings=`, never
     // as query text: the store rejects a binding the query does not project, and these
